@@ -1,0 +1,406 @@
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  Plus,
+  Trash2,
+  RefreshCw,
+  Server,
+  CheckCircle,
+  ChevronDown,
+  ChevronRight,
+  Layers
+} from 'lucide-react'
+import clsx from 'clsx'
+import {
+  fetchProviders,
+  createProvider,
+  deleteProvider,
+  fetchProviderModels,
+  createEndpoint,
+} from '../api/client'
+
+export default function Providers() {
+  const queryClient = useQueryClient()
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [expandedProvider, setExpandedProvider] = useState<number | null>(null)
+  const [fetchedModels, setFetchedModels] = useState<Record<number, string[]>>({})
+  const [selectedModels, setSelectedModels] = useState<Record<number, Set<string>>>({})
+  const [selectedPool, setSelectedPool] = useState<'tool' | 'normal' | 'advanced'>('normal')
+
+  const { data: providers, isLoading } = useQuery({
+    queryKey: ['providers'],
+    queryFn: fetchProviders,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteProvider,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+  })
+
+  const fetchModelsMutation = useMutation({
+    mutationFn: fetchProviderModels,
+    onSuccess: (data) => {
+      setFetchedModels(prev => ({ ...prev, [data.provider_id]: data.models }))
+      setSelectedModels(prev => ({ ...prev, [data.provider_id]: new Set() }))
+    },
+  })
+
+  const addEndpointMutation = useMutation({
+    mutationFn: (data: { provider_id: number; model_id: string; pool_type: 'tool' | 'normal' | 'advanced' }) =>
+      createEndpoint(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers'] })
+      queryClient.invalidateQueries({ queryKey: ['pools'] })
+    },
+  })
+
+  const handleFetchModels = (providerId: number) => {
+    setExpandedProvider(expandedProvider === providerId ? null : providerId)
+    if (!fetchedModels[providerId]) {
+      fetchModelsMutation.mutate(providerId)
+    }
+  }
+
+  const toggleModelSelection = (providerId: number, modelId: string) => {
+    setSelectedModels(prev => {
+      const current = prev[providerId] || new Set()
+      const updated = new Set(current)
+      if (updated.has(modelId)) {
+        updated.delete(modelId)
+      } else {
+        updated.add(modelId)
+      }
+      return { ...prev, [providerId]: updated }
+    })
+  }
+
+  const handleAddSelectedToPool = async (providerId: number) => {
+    const models = selectedModels[providerId]
+    if (!models || models.size === 0) return
+
+    for (const modelId of models) {
+      await addEndpointMutation.mutateAsync({
+        provider_id: providerId,
+        model_id: modelId,
+        pool_type: selectedPool,
+      })
+    }
+
+    // 清除选择
+    setSelectedModels(prev => ({ ...prev, [providerId]: new Set() }))
+  }
+
+  if (isLoading) {
+    return (
+      <div className="p-8 flex items-center justify-center">
+        <div className="animate-spin w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 animate-fadeIn">
+      {/* 页面标题 */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-surface-900 dark:text-white">
+            服务商管理
+          </h1>
+          <p className="mt-1 text-sm text-surface-500">
+            添加和管理 API 服务商，拉取模型列表
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="flex items-center justify-center px-4 py-2.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors text-sm font-medium"
+        >
+          <Plus className="w-5 h-5 mr-2" />
+          添加服务商
+        </button>
+      </div>
+
+      {/* 服务商列表 */}
+      <div className="space-y-3 sm:space-y-4">
+        {providers?.map(provider => (
+          <div
+            key={provider.id}
+            className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 overflow-hidden"
+          >
+            {/* 服务商头部 */}
+            <div className="p-4 sm:p-6">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+                <div className="flex items-center space-x-3 sm:space-x-4 flex-1 min-w-0">
+                  <div className="p-2 sm:p-3 bg-primary-50 dark:bg-primary-900/20 rounded-xl flex-shrink-0">
+                    <Server className="w-5 h-5 sm:w-6 sm:h-6 text-primary-500" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-semibold text-sm sm:text-base text-surface-900 dark:text-white truncate">
+                      {provider.name}
+                    </h3>
+                    <p className="text-xs sm:text-sm text-surface-500 font-mono truncate">
+                      {provider.base_url}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-4 flex-wrap">
+                  {/* 状态标签 */}
+                  <span className={clsx(
+                    'px-2 py-0.5 sm:px-3 sm:py-1 rounded-full text-xs font-medium',
+                    provider.enabled
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                      : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                  )}>
+                    {provider.enabled ? '启用' : '禁用'}
+                  </span>
+
+                  {/* 格式标签 */}
+                  <span className="px-2 py-0.5 sm:px-3 sm:py-1 bg-surface-100 dark:bg-surface-700 rounded-full text-xs font-medium text-surface-600 dark:text-surface-400">
+                    {provider.api_format.toUpperCase()}
+                  </span>
+
+                  {/* 统计 */}
+                  <div className="text-xs sm:text-sm text-surface-500">
+                    <span className="text-green-500">{provider.healthy_endpoint_count}</span>
+                    {' / '}
+                    <span>{provider.endpoint_count}</span>
+                    {' 端点'}
+                  </div>
+
+                  {/* 操作按钮 */}
+                  <button
+                    onClick={() => handleFetchModels(provider.id)}
+                    className="p-2 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-lg transition-colors"
+                    title="拉取模型"
+                  >
+                    {expandedProvider === provider.id ? (
+                      <ChevronDown className="w-5 h-5 text-surface-500" />
+                    ) : (
+                      <ChevronRight className="w-5 h-5 text-surface-500" />
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => deleteMutation.mutate(provider.id)}
+                    className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                    title="删除"
+                  >
+                    <Trash2 className="w-5 h-5 text-red-500" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 模型列表（展开时显示） */}
+            {expandedProvider === provider.id && (
+              <div className="border-t border-surface-200 dark:border-surface-700 p-4 sm:p-6 bg-surface-50 dark:bg-surface-900">
+                {fetchModelsMutation.isPending ? (
+                  <div className="flex items-center justify-center py-8">
+                    <RefreshCw className="w-6 h-6 text-primary-500 animate-spin" />
+                    <span className="ml-2 text-surface-500">正在拉取模型...</span>
+                  </div>
+                ) : fetchedModels[provider.id] ? (
+                  <div className="space-y-4">
+                    {/* 池选择和添加按钮 */}
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs sm:text-sm text-surface-500">添加到池:</span>
+                        <select
+                          value={selectedPool}
+                          onChange={(e) => setSelectedPool(e.target.value as 'tool' | 'normal' | 'advanced')}
+                          className="px-3 py-1.5 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg text-sm"
+                        >
+                          <option value="tool">工具池 (haiku)</option>
+                          <option value="normal">普通池 (sonnet)</option>
+                          <option value="advanced">高级池 (opus)</option>
+                        </select>
+                      </div>
+                      <button
+                        onClick={() => handleAddSelectedToPool(provider.id)}
+                        disabled={!selectedModels[provider.id]?.size}
+                        className={clsx(
+                          'flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+                          selectedModels[provider.id]?.size
+                            ? 'bg-primary-500 text-white hover:bg-primary-600'
+                            : 'bg-surface-200 text-surface-400 cursor-not-allowed'
+                        )}
+                      >
+                        <Layers className="w-4 h-4 mr-2" />
+                        添加选中 ({selectedModels[provider.id]?.size || 0})
+                      </button>
+                    </div>
+
+                    {/* 模型网格 */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                      {fetchedModels[provider.id].map(modelId => (
+                        <label
+                          key={modelId}
+                          className={clsx(
+                            'flex items-center p-3 rounded-lg border cursor-pointer transition-colors',
+                            selectedModels[provider.id]?.has(modelId)
+                              ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+                              : 'border-surface-200 dark:border-surface-700 hover:border-surface-300 dark:hover:border-surface-600'
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedModels[provider.id]?.has(modelId) || false}
+                            onChange={() => toggleModelSelection(provider.id, modelId)}
+                            className="sr-only"
+                          />
+                          <div className={clsx(
+                            'w-4 h-4 rounded border mr-3 flex items-center justify-center',
+                            selectedModels[provider.id]?.has(modelId)
+                              ? 'bg-primary-500 border-primary-500'
+                              : 'border-surface-300 dark:border-surface-600'
+                          )}>
+                            {selectedModels[provider.id]?.has(modelId) && (
+                              <CheckCircle className="w-3 h-3 text-white" />
+                            )}
+                          </div>
+                          <span className="text-sm text-surface-700 dark:text-surface-300 truncate">
+                            {modelId}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-center text-surface-500 py-4">
+                    点击展开以拉取模型列表
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {providers?.length === 0 && (
+          <div className="text-center py-12 bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700">
+            <Server className="w-12 h-12 text-surface-300 mx-auto mb-4" />
+            <p className="text-surface-500">还没有添加服务商</p>
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="mt-4 text-primary-500 hover:text-primary-600"
+            >
+              添加第一个服务商
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 添加服务商弹窗 */}
+      {showAddModal && (
+        <AddProviderModal onClose={() => setShowAddModal(false)} />
+      )}
+    </div>
+  )
+}
+
+function AddProviderModal({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [formData, setFormData] = useState({
+    name: '',
+    base_url: '',
+    api_key: '',
+    api_format: 'openai' as 'openai' | 'anthropic',
+  })
+
+  const mutation = useMutation({
+    mutationFn: createProvider,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers'] })
+      onClose()
+    },
+  })
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    mutation.mutate(formData)
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white dark:bg-surface-800 rounded-2xl w-full max-w-md p-4 sm:p-6 animate-fadeIn">
+        <h2 className="text-lg sm:text-xl font-semibold text-surface-900 dark:text-white mb-4 sm:mb-6">
+          添加服务商
+        </h2>
+
+        <form onSubmit={handleSubmit} className="space-y-3 sm:space-y-4">
+          <div>
+            <label className="block text-xs sm:text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">
+              名称
+            </label>
+            <input
+              type="text"
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              placeholder="例如: 服务商A"
+              className="w-full px-4 py-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs sm:text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">
+              Base URL
+            </label>
+            <input
+              type="url"
+              value={formData.base_url}
+              onChange={(e) => setFormData({ ...formData, base_url: e.target.value })}
+              placeholder="例如: http://127.0.0.1:8311/v1"
+              className="w-full px-4 py-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-xs sm:text-sm"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs sm:text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">
+              API Key
+            </label>
+            <input
+              type="password"
+              value={formData.api_key}
+              onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
+              placeholder="API 密钥"
+              className="w-full px-4 py-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs sm:text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">
+              API 格式
+            </label>
+            <select
+              value={formData.api_format}
+              onChange={(e) => setFormData({ ...formData, api_format: e.target.value as 'openai' | 'anthropic' })}
+              className="w-full px-4 py-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
+            >
+              <option value="openai">OpenAI (/v1/chat/completions)</option>
+              <option value="anthropic">Anthropic (/v1/messages)</option>
+            </select>
+          </div>
+
+          <div className="flex justify-end space-x-3 pt-3 sm:pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-lg transition-colors"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={mutation.isPending}
+              className="px-4 py-2 text-sm bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors disabled:opacity-50"
+            >
+              {mutation.isPending ? '添加中...' : '添加'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}

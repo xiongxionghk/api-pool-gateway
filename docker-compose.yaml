@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  gateway:
+    build: .
+    container_name: api-pool-gateway
+    ports:
+      - "8899:8899"
+    volumes:
+      # 持久化数据
+      - ./data:/app/data
+    environment:
+      # 服务配置
+      - HOST=0.0.0.0
+      - API_PORT=8899
+      # 管理后台密码
+      - ADMIN_PASSWORD=admin123
+      # 池配置
+      - DEFAULT_COOLDOWN_SECONDS=60
+      - MAX_RETRIES_PER_PROVIDER=3
+      # 虚拟模型名
+      - VIRTUAL_MODEL_TOOL=haiku
+      - VIRTUAL_MODEL_NORMAL=sonnet
+      - VIRTUAL_MODEL_ADVANCED=opus
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8899/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
