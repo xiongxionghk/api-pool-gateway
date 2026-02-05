@@ -115,6 +115,7 @@ if frontend_dist.exists():
         return FileResponse(frontend_dist / "index.html")
 
     # 前端 SPA 路由 - 这些是前端页面路由
+    @app.get("/dashboard")
     @app.get("/providers")
     @app.get("/pools")
     @app.get("/pools/{pool_type}")
