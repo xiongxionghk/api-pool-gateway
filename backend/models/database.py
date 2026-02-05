@@ -46,7 +46,7 @@ class ModelEndpoint(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=False)
-    model_id = Column(String(200), nullable=False, comment="模型ID，如 github-copilot/claude-haiku-4.5")
+    model_id = Column(String(200), nullable=False, comment="模型ID，如 provider/claude-haiku-4.5")
     pool_type = Column(SQLEnum(PoolType), nullable=True, comment="所属池类型，null表示未分配")
     enabled = Column(Boolean, default=True, comment="是否启用")
     weight = Column(Integer, default=1, comment="权重，数字越大分配流量越多")
