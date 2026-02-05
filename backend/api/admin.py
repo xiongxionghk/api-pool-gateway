@@ -131,44 +131,81 @@ async def fetch_provider_models(
     provider_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """从服务商拉取模型列表"""
+    """从服务商拉取模型列表
+
+    注意：大多数中转服务（OneAPI/NewAPI等）的 /models 端点都使用 OpenAI 格式，
+    即使服务商本身配置为 Anthropic 格式。因此我们优先尝试 OpenAI 格式的认证方式。
+    """
     provider = await crud.get_provider(db, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="服务商不存在")
 
-    # 构建请求
     url = f"{provider.base_url}/models"
-    headers = {}
-    if provider.api_format == ApiFormat.OPENAI:
-        headers["Authorization"] = f"Bearer {provider.api_key}"
-    else:
-        headers["x-api-key"] = provider.api_key
-        headers["anthropic-version"] = "2023-06-01"
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+    # 定义多种认证方式，优先使用 OpenAI 格式（大多数中转服务都支持）
+    auth_strategies = [
+        # 策略1: OpenAI Bearer Token 格式（优先，兼容性最好）
+        {"Authorization": f"Bearer {provider.api_key}"},
+        # 策略2: Anthropic 格式
+        {"x-api-key": provider.api_key, "anthropic-version": "2023-06-01"},
+    ]
 
-            # 解析模型列表
-            models = []
-            if "data" in data:
-                for m in data["data"]:
-                    model_id = m.get("id") or m.get("name")
-                    if model_id:
-                        models.append(model_id)
+    # 如果服务商配置为 Anthropic 格式，也优先尝试 OpenAI 方式
+    # 因为中转服务的 /models 端点通常只支持 OpenAI 格式
 
-            return FetchModelsResponse(
-                provider_id=provider.id,
-                provider_name=provider.name,
-                models=sorted(models)
-            )
+    last_error = None
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for headers in auth_strategies:
+            try:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
 
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"拉取模型失败: HTTP {e.response.status_code}")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"拉取模型失败: {e}")
+                # 解析模型列表 - 支持多种返回格式
+                models = []
+
+                # OpenAI 格式: {"data": [{"id": "model-name"}, ...]}
+                if "data" in data and isinstance(data["data"], list):
+                    for m in data["data"]:
+                        model_id = m.get("id") or m.get("name")
+                        if model_id:
+                            models.append(model_id)
+
+                # Anthropic 格式: {"models": [{"id": "model-name"}, ...]}
+                elif "models" in data and isinstance(data["models"], list):
+                    for m in data["models"]:
+                        model_id = m.get("id") or m.get("name")
+                        if model_id:
+                            models.append(model_id)
+
+                # 简单列表格式: ["model-1", "model-2", ...]
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, str):
+                            models.append(item)
+                        elif isinstance(item, dict):
+                            model_id = item.get("id") or item.get("name")
+                            if model_id:
+                                models.append(model_id)
+
+                if models:
+                    return FetchModelsResponse(
+                        provider_id=provider.id,
+                        provider_name=provider.name,
+                        models=sorted(models)
+                    )
+
+            except httpx.HTTPStatusError as e:
+                last_error = f"HTTP {e.response.status_code}"
+                logger.debug(f"尝试获取模型列表失败 (headers={list(headers.keys())}): {last_error}")
+                continue
+            except Exception as e:
+                last_error = str(e)
+                logger.debug(f"尝试获取模型列表失败 (headers={list(headers.keys())}): {last_error}")
+                continue
+
+    # 所有策略都失败了
+    raise HTTPException(status_code=502, detail=f"拉取模型失败: {last_error}")
 
 
 # ==================== 模型端点管理 ====================

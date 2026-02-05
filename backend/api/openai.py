@@ -65,7 +65,6 @@ async def create_chat_completion(
         db=db,
         pool_type=pool_type,
         request_body=body,
-        incoming_format="openai",
         stream=stream
     )
 

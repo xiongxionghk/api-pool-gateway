@@ -21,15 +21,13 @@ logger = logging.getLogger(__name__)
 class RetryConfig:
     """重试配置"""
     # 单个端点的重试次数
-    ENDPOINT_RETRIES = 3
+    ENDPOINT_RETRIES = 2
     # 跨端点的最大尝试次数
-    MAX_ENDPOINT_ATTEMPTS = 10
+    MAX_ENDPOINT_ATTEMPTS = 5
     # 指数退避基数(秒)
     BACKOFF_BASE = 1.5
     # 最大退避时间(秒)
     BACKOFF_MAX = 30.0
-    # 流式请求:验证前N个chunk才开始传输
-    STREAM_VALIDATION_CHUNKS = 3
     # 可重试的HTTP状态码
     RETRIABLE_STATUS_CODES = {429, 500, 502, 503, 504}
     # 可重试的异常类型
@@ -56,15 +54,14 @@ class Forwarder:
         db: AsyncSession,
         pool_type: PoolType,
         request_body: Dict[str, Any],
-        incoming_format: str,  # "openai" or "anthropic" (保留参数以保持接口兼容性)
         stream: bool = False
     ) -> tuple[Optional[Dict[str, Any]], Optional[AsyncIterator[bytes]], Optional[str]]:
         """
         转发请求到后端服务商，包含完整的重试和故障转移机制
 
         策略：
-        1. 尝试多个端点 (Max 10)
-        2. 每个端点尝试多次 (Max 3)
+        1. 尝试多个端点 (Max 5)
+        2. 每个端点尝试多次 (Max 2)
         3. 遇到网络错误/5xx/429 指数退避重试
         4. 遇到 4xx (非429) 客户端错误直接返回不重试
         """
@@ -122,7 +119,7 @@ class Forwarder:
                     if stream:
                         return await self._handle_stream_request(
                             db, endpoint, url, headers, body,
-                            original_model, start_time, retry, attempt
+                            original_model, start_time
                         )
                     else:
                         return await self._handle_normal_request(
@@ -206,12 +203,6 @@ class Forwarder:
             latency_ms = int((time.time() - start_time) * 1000)
             response_data = response.json()
 
-            # 统一模型ID
-            if "model" in response_data:
-                response_data["model"] = original_model
-            elif response_data.get("type") == "message" and "model" in response_data:
-                response_data["model"] = original_model
-
             # 记录成功
             await self.pool_mgr.mark_success(db, endpoint.endpoint_id, latency_ms)
 
@@ -230,7 +221,7 @@ class Forwarder:
                 pass
 
             await self._log_request(
-                db, PoolType(self._model_to_pool_type(original_model)),
+                db, self.pool_mgr.model_to_pool_type(original_model),
                 original_model, endpoint,
                 success=True, latency_ms=latency_ms,
                 status_code=200,
@@ -247,235 +238,114 @@ class Forwarder:
         headers: Dict[str, str],
         body: Dict[str, Any],
         original_model: str,
-        start_time: float,
-        retry_count: int,
-        attempt_count: int
-    ) -> tuple[None, AsyncIterator[bytes], Optional[str]]:
-        """
-        处理流式请求 - 立即返回生成器，在生成器内部发起请求
-        这样可以在等待上游响应时发送心跳，保持客户端连接
-        """
-        req_timeout = endpoint.timeout if endpoint.timeout is not None else self.timeout
-        pool_mgr = self.pool_mgr
-        endpoint_id = endpoint.endpoint_id
-        # 心跳间隔(秒)
-        HEARTBEAT_INTERVAL = 5.0
-        # 首包超时(秒) - 等待上游首次响应的最大时间
-        FIRST_CHUNK_TIMEOUT = 120.0
-
-        async def stream_with_heartbeat():
-            client = None
-            response = None
-            try:
-                client = httpx.AsyncClient(timeout=req_timeout)
-                request = client.build_request("POST", url, json=body, headers=headers)
-
-                # 发起请求，同时发送心跳
-                send_task = asyncio.create_task(client.send(request, stream=True))
-                elapsed = 0.0
-
-                while elapsed < FIRST_CHUNK_TIMEOUT:
-                    try:
-                        response = await asyncio.wait_for(
-                            asyncio.shield(send_task),
-                            timeout=HEARTBEAT_INTERVAL
-                        )
-                        break  # 收到响应，退出心跳循环
-                    except asyncio.TimeoutError:
-                        # 还没收到响应，发送心跳
-                        elapsed += HEARTBEAT_INTERVAL
-                        yield b": heartbeat\n\n"
-                        continue
-
-                if response is None:
-                    # 超时未收到响应
-                    send_task.cancel()
-                    raise httpx.ReadTimeout("Upstream response timeout", request=request)
-
-                # 检查状态码
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    await response.aclose()
-                    raise httpx.HTTPStatusError(
-                        f"HTTP {response.status_code}: {error_text[:200]}",
-                        request=request,
-                        response=response
-                    )
-
-                # 开始处理流
-                iterator = response.aiter_bytes()
-
-                while True:
-                    try:
-                        chunk = await asyncio.wait_for(
-                            iterator.__anext__(),
-                            timeout=HEARTBEAT_INTERVAL
-                        )
-                        # 检查是否有错误
-                        chunk_str = chunk.decode('utf-8', errors='ignore')
-                        if '"error":' in chunk_str and '"message":' in chunk_str:
-                            raise httpx.HTTPStatusError(
-                                f"Stream contained error: {chunk_str[:100]}",
-                                request=request,
-                                response=response
-                            )
-                        # 处理并输出 chunk
-                        for processed in self._process_stream_chunk(chunk, original_model):
-                            yield processed
-                    except asyncio.TimeoutError:
-                        # 发送心跳
-                        yield b": heartbeat\n\n"
-                        continue
-                    except StopAsyncIteration:
-                        break
-
-                # 流正常结束，记录成功
-                latency_ms = int((time.time() - start_time) * 1000)
-                from db import get_db_context
-                async with get_db_context() as new_db:
-                    await pool_mgr.mark_success(new_db, endpoint_id, latency_ms)
-                    # 记录请求日志
-                    await self._log_request(
-                        new_db,
-                        PoolType(self._model_to_pool_type(original_model)),
-                        original_model, endpoint,
-                        success=True, latency_ms=latency_ms,
-                        status_code=200
-                    )
-
-            except Exception as e:
-                latency_ms = int((time.time() - start_time) * 1000)
-                logger.error(f"[Forwarder] 流式请求失败: {e}")
-                from db import get_db_context
-                async with get_db_context() as new_db:
-                    await pool_mgr.mark_failure(new_db, endpoint_id, str(e))
-                    # 记录失败日志
-                    await self._log_request(
-                        new_db,
-                        PoolType(self._model_to_pool_type(original_model)),
-                        original_model, endpoint,
-                        success=False, latency_ms=latency_ms,
-                        error_message=str(e)
-                    )
-                # 不抛出异常，客户端会看到流中断
-            finally:
-                if response:
-                    await response.aclose()
-                if client:
-                    await client.aclose()
-
-        return None, stream_with_heartbeat(), None
-
-    async def _create_stream_response(
-        self,
-        client: httpx.AsyncClient,
-        response: httpx.Response,
-        iterator: AsyncIterator[bytes],
-        buffered_chunks: List[bytes],
-        db: AsyncSession,
-        endpoint: SelectedEndpoint,
-        original_model: str,
         start_time: float
     ) -> tuple[None, AsyncIterator[bytes], Optional[str]]:
-        """创建流式响应生成器，包含心跳保活机制"""
-        pool_mgr = self.pool_mgr
-        endpoint_id = endpoint.endpoint_id
-        # 心跳间隔(秒) - 每5秒发送一次心跳，防止客户端超时
-        HEARTBEAT_INTERVAL = 5.0
+        """
+        处理流式请求 - 立即发起请求，确认连接成功后再返回生成器
+        这样外层的重试逻辑可以捕获连接错误
+        """
+        req_timeout = endpoint.timeout if endpoint.timeout is not None else self.timeout
 
-        async def stream_generator():
-            try:
-                # 1. 先发送缓冲的 chunks
-                for chunk in buffered_chunks:
-                    for processed in self._process_stream_chunk(chunk, original_model):
-                        yield processed
+        # 1. 建立连接并发送请求头
+        client = httpx.AsyncClient(timeout=req_timeout)
+        try:
+            request = client.build_request("POST", url, json=body, headers=headers)
+            # 立即发送请求（stream=True），如果连接失败会在这里抛出异常
+            response = await client.send(request, stream=True)
 
-                # 2. 继续处理剩余的流，带心跳保活
-                while True:
-                    try:
-                        # 等待下一个 chunk，超时则发送心跳
-                        chunk = await asyncio.wait_for(
-                            iterator.__anext__(),
-                            timeout=HEARTBEAT_INTERVAL
-                        )
-                        for processed in self._process_stream_chunk(chunk, original_model):
-                            yield processed
-                    except asyncio.TimeoutError:
-                        # 超时未收到数据，发送 SSE 心跳注释保持连接
-                        yield b": heartbeat\n\n"
-                        continue
-                    except StopAsyncIteration:
-                        # 流正常结束
-                        break
-
-                # 流结束后记录成功 - 使用独立的数据库会话
-                latency_ms = int((time.time() - start_time) * 1000)
-                from db import get_db_context
-                async with get_db_context() as new_db:
-                    await pool_mgr.mark_success(new_db, endpoint_id, latency_ms)
-
-            except Exception as e:
-                # 流传输中出错（此时已无法重试，因为已经开始给客户端发数据了）
-                latency_ms = int((time.time() - start_time) * 1000)
-                logger.error(f"[Forwarder] 流传输中断: {e}")
-                from db import get_db_context
-                async with get_db_context() as new_db:
-                    await pool_mgr.mark_failure(new_db, endpoint_id, str(e))
-                # 不再抛出异常，客户端只会看到流中断
-            finally:
-                # 确保资源释放
+            # 2. 检查状态码
+            if response.status_code != 200:
+                # 读取错误信息
+                error_text = await response.aread()
                 await response.aclose()
                 await client.aclose()
 
-        return None, stream_generator(), None
+                # 抛出 StatusError，外层重试逻辑会捕获
+                raise httpx.HTTPStatusError(
+                    f"HTTP {response.status_code}: {error_text[:200]}",
+                    request=request,
+                    response=response
+                )
 
-    def _process_stream_chunk(self, chunk: bytes, original_model: str) -> AsyncIterator[bytes]:
-        """处理单个流数据块，解析并替换模型名"""
-        # 注意：这里简化处理，假设 chunk 边界正好是行边界
-        # 实际生产中可能需要 LineBuffer 处理跨 chunk 的行
-        # 但大多数 LLM API 返回的 chunk 都是完整的 data: 行
+            # 3. 返回生成器处理后续数据流
+            # 注意：client 和 response 的所有权转移给了生成器
+            generator = self._stream_generator(
+                client, response, endpoint, original_model, start_time
+            )
+            return None, generator, None
 
-        text = chunk.decode("utf-8", errors="ignore")
-        lines = text.split('\n')
+        except Exception:
+            # 如果在建立连接阶段失败，确保清理资源并抛出异常供外层重试
+            await client.aclose()
+            raise
 
-        for i, line in enumerate(lines):
-            # 处理分割导致的空行，最后一行如果为空不需要加回车
-            if not line and i == len(lines) - 1:
-                continue
+    async def _stream_generator(
+        self,
+        client: httpx.AsyncClient,
+        response: httpx.Response,
+        endpoint: SelectedEndpoint,
+        original_model: str,
+        start_time: float
+    ) -> AsyncIterator[bytes]:
+        """
+        流式响应生成器 - 负责读取数据流并处理中断
+        """
+        pool_mgr = self.pool_mgr
+        endpoint_id = endpoint.endpoint_id
 
-            if line.startswith("data: "):
-                if line.strip() == "data: [DONE]":
-                    yield (line + "\n").encode("utf-8")
-                    continue
+        try:
+            # 直接 pipe 数据流
+            async for chunk in response.aiter_bytes():
+                yield chunk
 
-                try:
-                    content = line[6:]  # remove "data: "
-                    data = json.loads(content)
-                    changed = False
+            # 流正常结束，记录成功
+            latency_ms = int((time.time() - start_time) * 1000)
 
-                    # OpenAI 格式
-                    if "model" in data:
-                        data["model"] = original_model
-                        changed = True
+            # 使用新的数据库会话记录日志（因为原来的可能已经关闭或不在此上下文）
+            from db import get_db_context
+            async with get_db_context() as new_db:
+                await pool_mgr.mark_success(new_db, endpoint_id, latency_ms)
+                # 记录请求日志
+                await self._log_request(
+                    new_db,
+                    pool_mgr.model_to_pool_type(original_model),
+                    original_model, endpoint,
+                    success=True, latency_ms=latency_ms,
+                    status_code=200
+                )
 
-                    # Anthropic 格式 (message_start event)
-                    if data.get("type") == "message_start" and "message" in data:
-                        if "model" in data["message"]:
-                            data["message"]["model"] = original_model
-                            changed = True
+        except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            error_msg = str(e)
+            logger.error(f"[Forwarder] 流式传输中断: {error_msg}")
 
-                    if changed:
-                        new_line = f"data: {json.dumps(data)}\n"
-                        yield new_line.encode("utf-8")
-                    else:
-                        yield (line + "\n").encode("utf-8")
-                except Exception:
-                    # 解析失败，原样返回
-                    yield (line + "\n").encode("utf-8")
-            else:
-                # 其他行（如 event:, :ping, 空行），直接返回
-                # 只有非空行才加回车，或者是中间的空行
-                yield (line + "\n").encode("utf-8")
+            # 发送 SSE 错误事件，让客户端知道出错了
+            error_json = json.dumps({
+                "error": {
+                    "message": f"Upstream stream error: {error_msg}",
+                    "type": "upstream_error"
+                }
+            })
+            yield f"data: {error_json}\n\n".encode("utf-8")
+
+            from db import get_db_context
+            async with get_db_context() as new_db:
+                await pool_mgr.mark_failure(new_db, endpoint_id, error_msg)
+                # 记录失败日志
+                await self._log_request(
+                    new_db,
+                    pool_mgr.model_to_pool_type(original_model),
+                    original_model, endpoint,
+                    success=False, latency_ms=latency_ms,
+                    error_message=error_msg
+                )
+        finally:
+            # 务必关闭资源
+            if response:
+                await response.aclose()
+            if client:
+                await client.aclose()
+
 
 
     async def _log_request(
@@ -509,15 +379,6 @@ class Forwarder:
         except Exception as e:
             logger.error(f"[Forwarder] 记录日志失败: {e}")
 
-    def _model_to_pool_type(self, model: str) -> str:
-        """根据模型名推断池类型"""
-        model_lower = model.lower()
-        if "haiku" in model_lower or "tool" in model_lower:
-            return "tool"
-        elif "opus" in model_lower or "advanced" in model_lower:
-            return "advanced"
-        else:
-            return "normal"
 
 
 # 全局单例

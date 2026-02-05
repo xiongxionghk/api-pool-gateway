@@ -65,7 +65,6 @@ async def create_message(
         db=db,
         pool_type=pool_type,
         request_body=body,
-        incoming_format="anthropic",
         stream=stream
     )
 

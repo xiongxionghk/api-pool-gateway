@@ -215,6 +215,7 @@ class PoolManager:
                     "id": ep.id,
                     "model_id": ep.model_id,
                     "enabled": ep.enabled,
+                    "weight": ep.weight,
                     "is_cooling": is_cooling,
                     "cooldown_remaining": remaining,
                     "total_requests": ep.total_requests,
@@ -240,6 +241,17 @@ class PoolManager:
             "total_endpoints": len(endpoints),
             "healthy_endpoints": sum(p["healthy_count"] for p in providers_status),
         }
+
+
+    def model_to_pool_type(self, model: str) -> PoolType:
+        """根据模型名推断池类型"""
+        model_lower = model.lower()
+        if "haiku" in model_lower or "tool" in model_lower:
+            return PoolType.TOOL
+        elif "opus" in model_lower or "advanced" in model_lower:
+            return PoolType.ADVANCED
+        else:
+            return PoolType.NORMAL
 
 
 # 全局单例
