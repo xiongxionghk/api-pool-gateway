@@ -2,7 +2,7 @@ from .database import Base, Provider, ModelEndpoint, Pool, RequestLog, ApiFormat
 from .schemas import (
     ProviderCreate, ProviderUpdate, ProviderResponse, ProviderWithModels,
     ModelEndpointCreate, ModelEndpointUpdate, ModelEndpointResponse,
-    PoolResponse, PoolEndpointsResponse,
+    PoolResponse, PoolEndpointsResponse, PoolUpdate,
     StatsResponse, LogResponse, LogListResponse,
     MessageResponse, FetchModelsResponse,
     ApiFormat as SchemaApiFormat, PoolType as SchemaPoolType
@@ -15,7 +15,7 @@ __all__ = [
     # Schemas
     "ProviderCreate", "ProviderUpdate", "ProviderResponse", "ProviderWithModels",
     "ModelEndpointCreate", "ModelEndpointUpdate", "ModelEndpointResponse",
-    "PoolResponse", "PoolEndpointsResponse",
+    "PoolResponse", "PoolEndpointsResponse", "PoolUpdate",
     "StatsResponse", "LogResponse", "LogListResponse",
     "MessageResponse", "FetchModelsResponse",
 ]

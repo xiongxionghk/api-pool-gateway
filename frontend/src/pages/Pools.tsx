@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Layers,
@@ -6,10 +6,14 @@ import {
   CheckCircle,
   XCircle,
   Snowflake,
-  Trash2
+  Settings,
+  Trash2,
+  Scale,
+  Clock,
+  Search
 } from 'lucide-react'
 import clsx from 'clsx'
-import { fetchPoolDetail, deleteEndpoint } from '../api/client'
+import { fetchPoolDetail, deleteEndpoint, updatePoolConfig, updateEndpoint } from '../api/client'
 
 const poolConfig = {
   tool: {
@@ -77,6 +81,10 @@ export default function Pools() {
 function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced' }) {
   const queryClient = useQueryClient()
   const config = poolConfig[poolType]
+  const [showSettings, setShowSettings] = useState(false)
+  const [cooldown, setCooldown] = useState<string>('')
+  const [reqTimeout, setReqTimeout] = useState<string>('')
+  const [modelFilter, setModelFilter] = useState('')
 
   const { data: poolDetail, isLoading } = useQuery({
     queryKey: ['pool', poolType],
@@ -84,13 +92,92 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
     refetchInterval: 5000,
   })
 
+  // 同步设置到本地状态
+  if (poolDetail && !showSettings) {
+    if (cooldown === '') setCooldown(poolDetail.cooldown_seconds.toString())
+    if (reqTimeout === '') setReqTimeout((poolDetail.timeout_seconds || 60).toString())
+  }
+
+  const updateConfigMutation = useMutation({
+    mutationFn: (data: { cooldown_seconds: number; timeout_seconds: number }) => updatePoolConfig(poolType, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pool', poolType] })
+      queryClient.invalidateQueries({ queryKey: ['pools'] })
+      setShowSettings(false)
+    },
+    onError: (error: any) => {
+      alert(`更新失败: ${error?.response?.data?.detail || error.message || '未知错误'}`)
+    },
+  })
+
+  const handleSaveSettings = () => {
+    const cooldownSec = parseInt(cooldown)
+    const timeoutSec = parseInt(reqTimeout)
+
+    if (isNaN(cooldownSec) || cooldownSec < 0) {
+      alert('请输入有效的冷却时间')
+      return
+    }
+    if (isNaN(timeoutSec) || timeoutSec <= 0) {
+      alert('请输入有效的超时时间')
+      return
+    }
+
+    updateConfigMutation.mutate({
+      cooldown_seconds: cooldownSec,
+      timeout_seconds: timeoutSec
+    })
+  }
+
   const deleteMutation = useMutation({
     mutationFn: deleteEndpoint,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pool', poolType] })
       queryClient.invalidateQueries({ queryKey: ['pools'] })
     },
+    onError: (error: any) => {
+      alert(`删除失败: ${error?.response?.data?.detail || error.message || '未知错误'}`)
+    },
   })
+
+  const updateEndpointMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => updateEndpoint(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pool', poolType] })
+    },
+    onError: (error: any) => {
+      alert(`更新失败: ${error?.response?.data?.detail || error.message || '未知错误'}`)
+    }
+  })
+
+  const handleDelete = (id: number, modelId: string) => {
+    if (window.confirm(`确定要移除模型 "${modelId}" 吗？`)) {
+      deleteMutation.mutate(id)
+    }
+  }
+
+  // 根据搜索词过滤模型
+  const filteredProviders = useMemo(() => {
+    if (!poolDetail || !modelFilter.trim()) {
+      return poolDetail?.providers || []
+    }
+    const keyword = modelFilter.toLowerCase().trim()
+    return poolDetail.providers
+      .map(provider => ({
+        ...provider,
+        models: provider.models.filter(m =>
+          m.model_id.toLowerCase().includes(keyword) ||
+          provider.provider_name.toLowerCase().includes(keyword)
+        )
+      }))
+      .filter(provider => provider.models.length > 0)
+  }, [poolDetail, modelFilter])
+
+  // 计算总权重
+  const totalWeight = filteredProviders.reduce(
+    (acc, p) => acc + p.models.filter(m => m.enabled && !m.is_cooling).reduce((sum, m) => sum + m.weight, 0),
+    0
+  ) || 1
 
   if (isLoading) {
     return (
@@ -120,12 +207,86 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
         <div className="p-4 sm:p-6">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <h2 className="text-lg sm:text-xl font-semibold text-surface-900 dark:text-white">
-                {config.label}
-              </h2>
-              <p className="text-xs sm:text-sm text-surface-500 mt-1">
-                虚拟模型名: <code className="px-2 py-0.5 bg-surface-100 dark:bg-surface-700 rounded">{config.model}</code>
-              </p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg sm:text-xl font-semibold text-surface-900 dark:text-white">
+                  {config.label}
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowSettings(!showSettings)
+                    if (!showSettings && poolDetail) {
+                      setCooldown(poolDetail.cooldown_seconds.toString())
+                      setReqTimeout((poolDetail.timeout_seconds || 60).toString())
+                    }
+                  }}
+                  className="p-1.5 text-surface-400 hover:text-primary-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-lg transition-colors"
+                  title="设置"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs sm:text-sm text-surface-500">
+                <span>
+                  虚拟模型名: <code className="px-2 py-0.5 bg-surface-100 dark:bg-surface-700 rounded">{config.model}</code>
+                </span>
+                <span className="flex items-center gap-1">
+                  冷却: <span className="font-medium text-surface-700 dark:text-surface-300">{poolDetail.cooldown_seconds}s</span>
+                </span>
+                <span className="flex items-center gap-1 border-l border-surface-300 dark:border-surface-600 pl-4">
+                  超时: <span className="font-medium text-surface-700 dark:text-surface-300">{poolDetail.timeout_seconds || 60}s</span>
+                </span>
+              </div>
+
+              {/* 设置面板 */}
+              {showSettings && (
+                <div className="mt-4 p-4 bg-surface-50 dark:bg-surface-900/50 rounded-lg border border-surface-200 dark:border-surface-700 animate-fadeIn">
+                  <div className="flex items-end gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-surface-700 dark:text-surface-300 mb-1">
+                        失败冷却 (秒)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={cooldown}
+                        onChange={e => setCooldown(e.target.value)}
+                        className="w-24 px-3 py-1.5 text-sm bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-surface-700 dark:text-surface-300 mb-1">
+                        请求超时 (秒)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={reqTimeout}
+                        onChange={e => setReqTimeout(e.target.value)}
+                        className="w-24 px-3 py-1.5 text-sm bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500"
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleSaveSettings}
+                        disabled={updateConfigMutation.isPending}
+                        className="px-3 py-1.5 bg-primary-500 hover:bg-primary-600 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
+                      >
+                        {updateConfigMutation.isPending ? '保存中...' : '保存'}
+                      </button>
+                      <button
+                        onClick={() => setShowSettings(false)}
+                        className="px-3 py-1.5 bg-surface-200 hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600 text-surface-700 dark:text-surface-200 text-sm rounded-lg transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-surface-500">
+                    冷却时间：请求失败后端点暂停使用的时间（0禁用）。<br />
+                    超时时间：单次请求的最大等待时间，超时后自动切换下一模型。
+                  </p>
+                </div>
+              )}
             </div>
             <div className="text-left sm:text-right">
               <p className="text-xl sm:text-2xl font-bold text-surface-900 dark:text-white">
@@ -141,9 +302,28 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
         </div>
       </div>
 
-      {/* 按服务商分组的端点列表 */}
+          {/* 按服务商分组的端点列表 */}
       <div className="space-y-4">
-        {poolDetail.providers.map(provider => (
+        {/* 搜索框 */}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" />
+          <input
+            type="text"
+            placeholder="搜索模型ID或服务商名称..."
+            value={modelFilter}
+            onChange={(e) => setModelFilter(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 text-sm bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-700 rounded-lg focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-shadow"
+          />
+        </div>
+
+        {filteredProviders.length === 0 ? (
+          <div className="text-center py-8 bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700">
+            <p className="text-surface-500 text-sm">
+              {modelFilter ? '未找到匹配的模型' : '该池还没有添加任何模型'}
+            </p>
+          </div>
+        ) : (
+          filteredProviders.map(provider => (
           <div
             key={provider.provider_id}
             className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700"
@@ -184,26 +364,82 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
                 >
                   <div className="flex items-start sm:items-center space-x-3 sm:space-x-4 min-w-0">
                     {/* 状态图标 */}
-                    {model.is_cooling ? (
-                      <div className="p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg flex-shrink-0">
+                    <button
+                      onClick={() => updateEndpointMutation.mutate({
+                        id: model.id,
+                        data: { enabled: !model.enabled }
+                      })}
+                      className={clsx(
+                        "p-2 rounded-lg flex-shrink-0 transition-colors",
+                        model.is_cooling
+                          ? "bg-blue-50 dark:bg-blue-900/20 cursor-not-allowed"
+                          : model.enabled
+                          ? "bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/30"
+                          : "bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30"
+                      )}
+                      disabled={model.is_cooling || updateEndpointMutation.isPending}
+                      title={model.enabled ? "点击禁用" : "点击启用"}
+                    >
+                      {model.is_cooling ? (
                         <Snowflake className="w-4 h-4 text-blue-500 animate-pulse-subtle" />
-                      </div>
-                    ) : model.enabled ? (
-                      <div className="p-2 bg-green-50 dark:bg-green-900/20 rounded-lg flex-shrink-0">
+                      ) : model.enabled ? (
                         <CheckCircle className="w-4 h-4 text-green-500" />
-                      </div>
-                    ) : (
-                      <div className="p-2 bg-red-50 dark:bg-red-900/20 rounded-lg flex-shrink-0">
+                      ) : (
                         <XCircle className="w-4 h-4 text-red-500" />
-                      </div>
-                    )}
+                      )}
+                    </button>
 
                     {/* 模型信息 */}
                     <div className="min-w-0">
-                      <p className="font-mono text-xs sm:text-sm text-surface-900 dark:text-white truncate">
-                        {model.model_id}
-                      </p>
+                      <div className="flex items-center gap-2">
+                        <p className={clsx(
+                          "font-mono text-xs sm:text-sm truncate transition-colors",
+                          model.enabled ? "text-surface-900 dark:text-white" : "text-surface-400 dark:text-surface-500 line-through"
+                        )}>
+                          {model.model_id}
+                        </p>
+                        {model.enabled && !model.is_cooling && (
+                          <span className="text-[10px] px-1.5 py-0.5 bg-surface-100 dark:bg-surface-700 text-surface-500 rounded-full">
+                            {Math.round((model.weight / totalWeight) * 100)}%
+                          </span>
+                        )}
+                      </div>
+
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
+                        {/* 权重控制 */}
+                        <div className="flex items-center gap-1 bg-surface-50 dark:bg-surface-800/50 rounded px-1.5 py-0.5 border border-surface-200 dark:border-surface-700">
+                          <Scale className="w-3 h-3 text-surface-400" />
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (model.weight > 1) {
+                                updateEndpointMutation.mutate({
+                                  id: model.id,
+                                  data: { weight: model.weight - 1 }
+                                })
+                              }
+                            }}
+                            className="w-4 h-4 flex items-center justify-center text-surface-500 hover:text-primary-500 hover:bg-surface-200 dark:hover:bg-surface-600 rounded text-xs font-medium"
+                          >
+                            -
+                          </button>
+                          <span className="text-xs font-medium min-w-[1rem] text-center text-surface-700 dark:text-surface-300">
+                            {model.weight}
+                          </span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              updateEndpointMutation.mutate({
+                                id: model.id,
+                                data: { weight: model.weight + 1 }
+                              })
+                            }}
+                            className="w-4 h-4 flex items-center justify-center text-surface-500 hover:text-primary-500 hover:bg-surface-200 dark:hover:bg-surface-600 rounded text-xs font-medium"
+                          >
+                            +
+                          </button>
+                        </div>
+
                         {model.is_cooling && (
                           <span className="text-xs text-blue-500">
                             冷却中 ({model.cooldown_remaining}s)
@@ -213,8 +449,32 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
                           成功率 {model.success_rate}%
                         </span>
                         <span className="text-xs text-surface-500">
-                          延迟 {Math.round(model.avg_latency_ms)}ms
+                          延迟 {model.avg_latency_ms >= 1000
+                            ? `${(model.avg_latency_ms / 1000).toFixed(2)}s`
+                            : `${Math.round(model.avg_latency_ms)}ms`}
                         </span>
+
+                        {/* 最小请求间隔设置 */}
+                        <div className="flex items-center gap-1 bg-surface-50 dark:bg-surface-800/50 rounded px-1.5 py-0.5 border border-surface-200 dark:border-surface-700" title="最小请求间隔(秒)">
+                          <Clock className="w-3 h-3 text-surface-400" />
+                          <input
+                            type="number"
+                            min="0"
+                            value={model.min_interval_seconds || 0}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value)
+                              if (!isNaN(val) && val >= 0) {
+                                updateEndpointMutation.mutate({
+                                  id: model.id,
+                                  data: { min_interval_seconds: val }
+                                })
+                              }
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-8 bg-transparent text-xs font-medium text-center text-surface-700 dark:text-surface-300 focus:outline-none"
+                          />
+                          <span className="text-[10px] text-surface-400">s</span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -229,7 +489,7 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
                     </div>
 
                     <button
-                      onClick={() => deleteMutation.mutate(model.id)}
+                      onClick={() => handleDelete(model.id, model.model_id)}
                       className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
                       title="从池中移除"
                     >
@@ -240,7 +500,8 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
               ))}
             </div>
           </div>
-        ))}
+        ))
+        )}
       </div>
     </div>
   )

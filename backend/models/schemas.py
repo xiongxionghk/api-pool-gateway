@@ -69,14 +69,15 @@ class ModelEndpointCreate(BaseModel):
     provider_id: int
     model_id: str
     pool_type: PoolType
-    priority: int = 0
+    weight: int = 1
 
 
 class ModelEndpointUpdate(BaseModel):
     """更新模型端点"""
     pool_type: Optional[PoolType] = None
     enabled: Optional[bool] = None
-    priority: Optional[int] = None
+    weight: Optional[int] = None
+    min_interval_seconds: Optional[int] = None
 
 
 class ModelEndpointResponse(BaseModel):
@@ -87,10 +88,12 @@ class ModelEndpointResponse(BaseModel):
     model_id: str
     pool_type: Optional[PoolType]
     enabled: bool
-    priority: int
+    weight: int
+    min_interval_seconds: int = 0
     is_cooling: bool
     cooldown_until: Optional[datetime]
     last_error: Optional[str]
+    last_request_at: Optional[datetime] = None
     total_requests: int
     success_requests: int
     error_requests: int
@@ -109,15 +112,26 @@ class PoolResponse(BaseModel):
     virtual_model_name: str
     cooldown_seconds: int
     max_retries: int
+    timeout_seconds: int = 60  # 请求超时(秒)
     endpoint_count: int
     healthy_endpoint_count: int
     provider_count: int
+
+
+class PoolUpdate(BaseModel):
+    """更新池配置"""
+    cooldown_seconds: Optional[int] = None
+    max_retries: Optional[int] = None
+    timeout_seconds: Optional[int] = None
 
 
 class PoolEndpointsResponse(BaseModel):
     """池内端点详情"""
     pool_type: PoolType
     virtual_model_name: str
+    cooldown_seconds: int = 30  # Add this
+    max_retries: int = 3        # Add this
+    timeout_seconds: int = 60
     providers: List[Dict[str, Any]]  # 按服务商分组的端点
 
 

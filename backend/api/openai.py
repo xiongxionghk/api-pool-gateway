@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_db
 from core import get_forwarder
-from models.database import PoolType
+from models.enums import PoolType
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,9 @@ async def create_chat_completion(
 
     # 解析池类型
     pool_type = _resolve_pool_type(model)
-    stream = body.get("stream", False)
+    # 强制使用流式，防止预热机制导致超时
+    stream = True
+    body["stream"] = True
 
     logger.info(f"[OpenAI API] 收到请求: model={model}, pool={pool_type.value}, stream={stream}")
 

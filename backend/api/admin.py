@@ -5,17 +5,19 @@ from typing import Optional, List
 
 import httpx
 from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_db, crud
 from models import (
     ProviderCreate, ProviderUpdate, ProviderResponse, ProviderWithModels,
     ModelEndpointCreate, ModelEndpointUpdate, ModelEndpointResponse,
-    PoolResponse, PoolEndpointsResponse,
+    PoolResponse, PoolEndpointsResponse, PoolUpdate,
     StatsResponse, LogResponse, LogListResponse,
     MessageResponse, FetchModelsResponse,
 )
-from models.database import Provider, ModelEndpoint, PoolType, ApiFormat
+from models.database import Provider, ModelEndpoint
+from models.enums import PoolType, ApiFormat
 from core import get_pool_manager
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ async def create_provider(
         api_key=data.api_key,
         api_format=data.api_format
     )
+    await db.commit()
     return ProviderResponse(
         id=provider.id,
         name=provider.name,
@@ -92,6 +95,7 @@ async def update_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="服务商不存在")
 
+    await db.commit()
     healthy = len([e for e in provider.endpoints if e.enabled and not e.is_cooling])
     return ProviderResponse(
         id=provider.id,
@@ -118,6 +122,7 @@ async def delete_provider(
     success = await crud.delete_provider(db, provider_id)
     if not success:
         raise HTTPException(status_code=404, detail="服务商不存在")
+    await db.commit()
     return MessageResponse(success=True, message="服务商已删除")
 
 
@@ -199,7 +204,7 @@ async def list_endpoints(
             model_id=ep.model_id,
             pool_type=ep.pool_type,
             enabled=ep.enabled,
-            priority=ep.priority,
+            weight=ep.weight,
             is_cooling=ep.is_cooling,
             cooldown_until=ep.cooldown_until,
             last_error=ep.last_error,
@@ -229,9 +234,10 @@ async def create_endpoint(
         provider_id=data.provider_id,
         model_id=data.model_id,
         pool_type=data.pool_type,
-        priority=data.priority
+        weight=data.weight
     )
 
+    await db.commit()
     return ModelEndpointResponse(
         id=endpoint.id,
         provider_id=endpoint.provider_id,
@@ -239,7 +245,7 @@ async def create_endpoint(
         model_id=endpoint.model_id,
         pool_type=endpoint.pool_type,
         enabled=endpoint.enabled,
-        priority=endpoint.priority,
+        weight=endpoint.weight,
         is_cooling=False,
         cooldown_until=None,
         last_error=None,
@@ -253,9 +259,9 @@ async def create_endpoint(
 
 @router.post("/endpoints/batch", response_model=MessageResponse)
 async def batch_create_endpoints(
-    provider_id: int,
-    pool_type: PoolType,
     model_ids: List[str],
+    provider_id: int = Query(..., description="服务商ID"),
+    pool_type: PoolType = Query(..., description="池类型"),
     db: AsyncSession = Depends(get_db)
 ):
     """批量添加模型到池"""
@@ -264,16 +270,33 @@ async def batch_create_endpoints(
         raise HTTPException(status_code=404, detail="服务商不存在")
 
     created = 0
+    skipped = 0
     for model_id in model_ids:
+        # 检查是否已存在相同的端点
+        existing = await db.execute(
+            select(ModelEndpoint).where(
+                ModelEndpoint.provider_id == provider_id,
+                ModelEndpoint.model_id == model_id,
+                ModelEndpoint.pool_type == pool_type
+            )
+        )
+        if existing.scalar_one_or_none():
+            skipped += 1
+            continue
+
         await crud.create_endpoint(
             db,
             provider_id=provider_id,
             model_id=model_id,
             pool_type=pool_type,
-            priority=0
+            weight=1
         )
         created += 1
 
+    await db.commit()
+
+    if skipped > 0:
+        return MessageResponse(success=True, message=f"已添加 {created} 个模型到 {pool_type.value} 池，跳过 {skipped} 个已存在的模型")
     return MessageResponse(success=True, message=f"已添加 {created} 个模型到 {pool_type.value} 池")
 
 
@@ -289,6 +312,7 @@ async def update_endpoint(
     if not endpoint:
         raise HTTPException(status_code=404, detail="端点不存在")
 
+    await db.commit()
     provider = endpoint.provider
     success_rate = round(endpoint.success_requests / endpoint.total_requests * 100, 2) if endpoint.total_requests > 0 else 0
 
@@ -299,7 +323,7 @@ async def update_endpoint(
         model_id=endpoint.model_id,
         pool_type=endpoint.pool_type,
         enabled=endpoint.enabled,
-        priority=endpoint.priority,
+        weight=endpoint.weight,
         is_cooling=endpoint.is_cooling,
         cooldown_until=endpoint.cooldown_until,
         last_error=endpoint.last_error,
@@ -320,6 +344,7 @@ async def delete_endpoint(
     success = await crud.delete_endpoint(db, endpoint_id)
     if not success:
         raise HTTPException(status_code=404, detail="端点不存在")
+    await db.commit()
     return MessageResponse(success=True, message="端点已删除")
 
 
@@ -343,11 +368,14 @@ async def list_pools(db: AsyncSession = Depends(get_db)):
             PoolType.ADVANCED: settings.virtual_model_advanced,
         }.get(pool_type, pool_type.value)
 
+        pool_config = await crud.get_or_create_pool(db, pool_type, virtual_name)
+
         result.append(PoolResponse(
             pool_type=pool_type,
             virtual_model_name=virtual_name,
-            cooldown_seconds=settings.default_cooldown_seconds,
-            max_retries=settings.max_retries_per_provider,
+            cooldown_seconds=pool_config.cooldown_seconds,
+            max_retries=pool_config.max_retries,
+            timeout_seconds=pool_config.timeout_seconds or 60,
             endpoint_count=len(endpoints),
             healthy_endpoint_count=healthy,
             provider_count=len(provider_ids),
@@ -374,10 +402,49 @@ async def get_pool_detail(
         PoolType.ADVANCED: settings.virtual_model_advanced,
     }.get(pool_type, pool_type.value)
 
+    # Get pool config
+    pool_config = await crud.get_or_create_pool(db, pool_type, virtual_name)
+
     return PoolEndpointsResponse(
         pool_type=pool_type,
         virtual_model_name=virtual_name,
+        cooldown_seconds=pool_config.cooldown_seconds,
+        max_retries=pool_config.max_retries,
+        timeout_seconds=pool_config.timeout_seconds or 60,
         providers=status["providers"]
+    )
+
+
+@router.put("/pools/{pool_type}", response_model=PoolResponse)
+async def update_pool_config(
+    pool_type: PoolType,
+    data: PoolUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    """更新池配置"""
+    update_data = data.model_dump(exclude_unset=True)
+    pool = await crud.update_pool(db, pool_type, **update_data)
+
+    if not pool:
+        # Should not happen as pools are auto-created
+        raise HTTPException(status_code=404, detail="池不存在")
+
+    await db.commit()
+
+    # 获取统计信息
+    endpoints = await crud.get_endpoints_by_pool(db, pool_type)
+    provider_ids = set(ep.provider_id for ep in endpoints)
+    healthy = len([ep for ep in endpoints if ep.enabled and not ep.is_cooling])
+
+    return PoolResponse(
+        pool_type=pool.pool_type,
+        virtual_model_name=pool.virtual_model_name,
+        cooldown_seconds=pool.cooldown_seconds,
+        max_retries=pool.max_retries,
+        timeout_seconds=pool.timeout_seconds or 60,
+        endpoint_count=len(endpoints),
+        healthy_endpoint_count=healthy,
+        provider_count=len(provider_ids),
     )
 
 
@@ -435,4 +502,5 @@ async def clear_logs(db: AsyncSession = Depends(get_db)):
     from models.database import RequestLog
 
     await db.execute(delete(RequestLog))
+    await db.commit()
     return MessageResponse(success=True, message="日志已清除")

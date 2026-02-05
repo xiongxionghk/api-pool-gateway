@@ -28,7 +28,7 @@ export interface ModelEndpoint {
   model_id: string
   pool_type: 'tool' | 'normal' | 'advanced' | null
   enabled: boolean
-  priority: number
+  weight: number
   is_cooling: boolean
   cooldown_until: string | null
   last_error: string | null
@@ -44,6 +44,7 @@ export interface Pool {
   virtual_model_name: string
   cooldown_seconds: number
   max_retries: number
+  timeout_seconds: number
   endpoint_count: number
   healthy_endpoint_count: number
   provider_count: number
@@ -52,6 +53,9 @@ export interface Pool {
 export interface PoolDetail {
   pool_type: string
   virtual_model_name: string
+  cooldown_seconds: number
+  max_retries: number
+  timeout_seconds: number
   providers: {
     provider_id: number
     provider_name: string
@@ -61,12 +65,14 @@ export interface PoolDetail {
       id: number
       model_id: string
       enabled: boolean
+      weight: number
       is_cooling: boolean
       cooldown_remaining: number
       total_requests: number
       success_requests: number
       success_rate: number
       avg_latency_ms: number
+      min_interval_seconds: number
     }[]
     healthy_count: number
     total_count: number
@@ -135,16 +141,15 @@ export const createEndpoint = (data: {
   provider_id: number
   model_id: string
   pool_type: 'tool' | 'normal' | 'advanced'
-  priority?: number
+  weight?: number
 }) => api.post<ModelEndpoint>('/endpoints', data).then(r => r.data)
 
 export const batchCreateEndpoints = (
   provider_id: number,
   pool_type: 'tool' | 'normal' | 'advanced',
   model_ids: string[]
-) => api.post('/endpoints/batch', null, {
+) => api.post('/endpoints/batch', model_ids, {
   params: { provider_id, pool_type },
-  data: model_ids,
 }).then(r => r.data)
 
 export const updateEndpoint = (id: number, data: Partial<ModelEndpoint>) =>
@@ -158,6 +163,9 @@ export const fetchPools = () =>
 
 export const fetchPoolDetail = (poolType: string) =>
   api.get<PoolDetail>(`/pools/${poolType}`).then(r => r.data)
+
+export const updatePoolConfig = (poolType: string, data: { cooldown_seconds?: number; max_retries?: number; timeout_seconds?: number }) =>
+  api.put<Pool>(`/pools/${poolType}`, data).then(r => r.data)
 
 export const fetchStats = () =>
   api.get<Stats>('/stats').then(r => r.data)

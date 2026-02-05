@@ -11,8 +11,23 @@ import {
 import clsx from 'clsx'
 import { fetchLogs, clearLogs, type LogEntry } from '../api/client'
 
+// 辅助函数：获取池对应的颜色样式
+function getPoolColor(type: string) {
+  switch (type) {
+    case 'tool':
+      return 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
+    case 'normal':
+      return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+    case 'advanced':
+      return 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300'
+    default:
+      return 'bg-gray-100 text-gray-800 dark:bg-surface-700 dark:text-surface-300'
+  }
+}
+
 export default function Logs() {
   const queryClient = useQueryClient()
+  const [showSuccess, setShowSuccess] = useState(false)
   const [filters, setFilters] = useState({
     pool_type: '',
     success: '',
@@ -33,11 +48,29 @@ export default function Logs() {
 
   const clearMutation = useMutation({
     mutationFn: clearLogs,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['logs'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['logs'] })
+      setShowSuccess(true)
+      setTimeout(() => setShowSuccess(false), 3000)
+    },
   })
+
+  const handleClearLogs = () => {
+    if (window.confirm('确定要清空所有日志吗？此操作不可恢复。')) {
+      clearMutation.mutate()
+    }
+  }
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 animate-fadeIn">
+      {/* 成功提示 */}
+      {showSuccess && (
+        <div className="bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 px-4 py-3 rounded-xl flex items-center animate-fadeIn">
+          <CheckCircle className="w-5 h-5 mr-2" />
+          日志已成功清空
+        </div>
+      )}
+
       {/* 页面标题 */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
@@ -57,11 +90,12 @@ export default function Logs() {
             刷新
           </button>
           <button
-            onClick={() => clearMutation.mutate()}
-            className="flex items-center px-3 py-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors text-sm"
+            onClick={handleClearLogs}
+            disabled={clearMutation.isPending}
+            className="flex items-center px-3 py-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors text-sm disabled:opacity-50"
           >
             <Trash2 className="w-4 h-4 mr-2" />
-            清空日志
+            {clearMutation.isPending ? '清空中...' : '清空日志'}
           </button>
         </div>
       </div>
@@ -119,18 +153,15 @@ export default function Logs() {
                       状态
                     </th>
                     <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider">
-                      池
-                    </th>
-                    <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider">
                       请求模型
                     </th>
-                    <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider hidden md:table-cell">
+                    <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider">
                       实际模型
                     </th>
-                    <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider hidden lg:table-cell">
+                    <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider">
                       服务商
                     </th>
-                    <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">
+                    <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider">
                       延迟
                     </th>
                     <th className="px-3 sm:px-4 py-2 sm:py-3 text-left text-xs font-medium text-surface-500 uppercase tracking-wider">
@@ -176,18 +207,6 @@ export default function Logs() {
 function LogRow({ log }: { log: LogEntry }) {
   const [expanded, setExpanded] = useState(false)
 
-  const poolLabels: Record<string, string> = {
-    tool: '工具',
-    normal: '普通',
-    advanced: '高级',
-  }
-
-  const poolColors: Record<string, string> = {
-    tool: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-    normal: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
-    advanced: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-  }
-
   return (
     <>
       <tr
@@ -204,35 +223,33 @@ function LogRow({ log }: { log: LogEntry }) {
             <XCircle className="w-4 h-4 sm:w-5 sm:h-5 text-red-500" />
           )}
         </td>
-        <td className="px-3 sm:px-4 py-2 sm:py-3">
+        <td className="px-3 sm:px-4 py-2 sm:py-3 font-mono text-xs sm:text-sm">
           <span className={clsx(
-            'px-2 py-0.5 rounded text-xs font-medium',
-            poolColors[log.pool_type] || 'bg-surface-100 text-surface-600'
+            'px-2 py-1 rounded-full font-medium text-xs',
+            getPoolColor(log.pool_type)
           )}>
-            {poolLabels[log.pool_type] || log.pool_type}
+            {log.requested_model}
           </span>
         </td>
-        <td className="px-3 sm:px-4 py-2 sm:py-3 font-mono text-xs sm:text-sm text-surface-700 dark:text-surface-300 max-w-[140px] sm:max-w-none truncate">
-          {log.requested_model}
-        </td>
-        <td className="px-3 sm:px-4 py-2 sm:py-3 font-mono text-xs sm:text-sm text-surface-700 dark:text-surface-300 max-w-[180px] truncate hidden md:table-cell">
+        <td className="px-3 sm:px-4 py-2 sm:py-3 font-mono text-xs sm:text-sm text-surface-700 dark:text-surface-300">
           {log.actual_model}
         </td>
-        <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-surface-600 dark:text-surface-400 hidden lg:table-cell">
-          {log.provider_name}
+        <td className="px-3 sm:px-4 py-2 sm:py-3 font-mono text-xs sm:text-sm">
+          <span className="text-primary-600 dark:text-primary-400">{log.provider_name}</span>
         </td>
-        <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-surface-600 dark:text-surface-400 hidden sm:table-cell">
-          {log.latency_ms}ms
+        <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-surface-600 dark:text-surface-400">
+          {log.latency_ms >= 1000 ? `${(log.latency_ms / 1000).toFixed(2)}s` : `${log.latency_ms}ms`}
         </td>
         <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-surface-500">
-          {new Date(log.created_at).toLocaleString('zh-CN')}
+          {new Date(log.created_at.endsWith('Z') ? log.created_at : log.created_at + 'Z').toLocaleString('zh-CN')}
         </td>
       </tr>
 
       {/* 错误详情展开 */}
+      {/* 错误详情展开 */}
       {expanded && log.error_message && (
         <tr>
-          <td colSpan={7} className="px-3 sm:px-4 py-2 sm:py-3 bg-red-50 dark:bg-red-900/10">
+          <td colSpan={6} className="px-3 sm:px-4 py-2 sm:py-3 bg-red-50 dark:bg-red-900/10">
             <p className="text-xs sm:text-sm text-red-600 dark:text-red-400 font-mono whitespace-pre-wrap">
               {log.error_message}
             </p>

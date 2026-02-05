@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
@@ -8,24 +8,32 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronRight,
-  Layers
+  Layers,
+  Edit2,
+  Search,
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
   fetchProviders,
   createProvider,
+  updateProvider,
   deleteProvider,
   fetchProviderModels,
-  createEndpoint,
+  batchCreateEndpoints,
+  Provider,
 } from '../api/client'
 
 export default function Providers() {
   const queryClient = useQueryClient()
-  const [showAddModal, setShowAddModal] = useState(false)
+  const [showModal, setShowModal] = useState(false)
+  const [modalMode, setModalMode] = useState<'create' | 'edit'>('create')
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null)
+
   const [expandedProvider, setExpandedProvider] = useState<number | null>(null)
   const [fetchedModels, setFetchedModels] = useState<Record<number, string[]>>({})
   const [selectedModels, setSelectedModels] = useState<Record<number, Set<string>>>({})
   const [selectedPool, setSelectedPool] = useState<'tool' | 'normal' | 'advanced'>('normal')
+  const [searchQuery, setSearchQuery] = useState('')
 
   const { data: providers, isLoading } = useQuery({
     queryKey: ['providers'],
@@ -35,6 +43,9 @@ export default function Providers() {
   const deleteMutation = useMutation({
     mutationFn: deleteProvider,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+    onError: (error: any) => {
+      alert(`删除服务商失败: ${error?.response?.data?.detail || error.message || '未知错误'}`)
+    },
   })
 
   const fetchModelsMutation = useMutation({
@@ -43,19 +54,26 @@ export default function Providers() {
       setFetchedModels(prev => ({ ...prev, [data.provider_id]: data.models }))
       setSelectedModels(prev => ({ ...prev, [data.provider_id]: new Set() }))
     },
+    onError: (error: any) => {
+      alert(`拉取模型失败: ${error?.response?.data?.detail || error.message || '未知错误'}`)
+    },
   })
 
   const addEndpointMutation = useMutation({
-    mutationFn: (data: { provider_id: number; model_id: string; pool_type: 'tool' | 'normal' | 'advanced' }) =>
-      createEndpoint(data),
+    mutationFn: (data: { provider_id: number; pool_type: 'tool' | 'normal' | 'advanced'; model_ids: string[] }) =>
+      batchCreateEndpoints(data.provider_id, data.pool_type, data.model_ids),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] })
       queryClient.invalidateQueries({ queryKey: ['pools'] })
+    },
+    onError: (error: any) => {
+      alert(`添加模型失败: ${error?.response?.data?.detail || error.message || '未知错误'}`)
     },
   })
 
   const handleFetchModels = (providerId: number) => {
     setExpandedProvider(expandedProvider === providerId ? null : providerId)
+    setSearchQuery('') // 重置搜索
     if (!fetchedModels[providerId]) {
       fetchModelsMutation.mutate(providerId)
     }
@@ -78,16 +96,27 @@ export default function Providers() {
     const models = selectedModels[providerId]
     if (!models || models.size === 0) return
 
-    for (const modelId of models) {
-      await addEndpointMutation.mutateAsync({
-        provider_id: providerId,
-        model_id: modelId,
-        pool_type: selectedPool,
-      })
-    }
+    // 使用批量接口一次性添加所有模型
+    addEndpointMutation.mutate({
+      provider_id: providerId,
+      pool_type: selectedPool,
+      model_ids: Array.from(models),
+    })
 
     // 清除选择
     setSelectedModels(prev => ({ ...prev, [providerId]: new Set() }))
+  }
+
+  const openCreateModal = () => {
+    setModalMode('create')
+    setEditingProvider(null)
+    setShowModal(true)
+  }
+
+  const openEditModal = (provider: Provider) => {
+    setModalMode('edit')
+    setEditingProvider(provider)
+    setShowModal(true)
   }
 
   if (isLoading) {
@@ -111,7 +140,7 @@ export default function Providers() {
           </p>
         </div>
         <button
-          onClick={() => setShowAddModal(true)}
+          onClick={openCreateModal}
           className="flex items-center justify-center px-4 py-2.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors text-sm font-medium"
         >
           <Plus className="w-5 h-5 mr-2" />
@@ -127,19 +156,34 @@ export default function Providers() {
             className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 overflow-hidden"
           >
             {/* 服务商头部 */}
-            <div className="p-4 sm:p-6">
+            <div
+              className="p-4 sm:p-6 cursor-pointer hover:bg-surface-50 dark:hover:bg-surface-700/50 transition-colors"
+              onClick={() => handleFetchModels(provider.id)}
+            >
               <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
                 <div className="flex items-center space-x-3 sm:space-x-4 flex-1 min-w-0">
                   <div className="p-2 sm:p-3 bg-primary-50 dark:bg-primary-900/20 rounded-xl flex-shrink-0">
                     <Server className="w-5 h-5 sm:w-6 sm:h-6 text-primary-500" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <h3 className="font-semibold text-sm sm:text-base text-surface-900 dark:text-white truncate">
-                      {provider.name}
-                    </h3>
-                    <p className="text-xs sm:text-sm text-surface-500 font-mono truncate">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-sm sm:text-base text-surface-900 dark:text-white truncate">
+                        {provider.name}
+                      </h3>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openEditModal(provider)
+                        }}
+                        className="p-1 text-surface-400 hover:text-primary-500 transition-all"
+                        title="编辑配置"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="text-xs text-surface-500 truncate mt-1 font-mono">
                       {provider.base_url}
-                    </p>
+                    </div>
                   </div>
                 </div>
 
@@ -167,21 +211,20 @@ export default function Providers() {
                     {' 端点'}
                   </div>
 
-                  {/* 操作按钮 */}
-                  <button
-                    onClick={() => handleFetchModels(provider.id)}
-                    className="p-2 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-lg transition-colors"
-                    title="拉取模型"
-                  >
+                  {/* 展开/收起指示器 */}
+                  <div className="p-2">
                     {expandedProvider === provider.id ? (
                       <ChevronDown className="w-5 h-5 text-surface-500" />
                     ) : (
                       <ChevronRight className="w-5 h-5 text-surface-500" />
                     )}
-                  </button>
+                  </div>
 
                   <button
-                    onClick={() => deleteMutation.mutate(provider.id)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      deleteMutation.mutate(provider.id)
+                    }}
                     className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
                     title="删除"
                   >
@@ -201,25 +244,41 @@ export default function Providers() {
                   </div>
                 ) : fetchedModels[provider.id] ? (
                   <div className="space-y-4">
-                    {/* 池选择和添加按钮 */}
+                    {/* 池选择和工具栏 */}
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs sm:text-sm text-surface-500">添加到池:</span>
-                        <select
-                          value={selectedPool}
-                          onChange={(e) => setSelectedPool(e.target.value as 'tool' | 'normal' | 'advanced')}
-                          className="px-3 py-1.5 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg text-sm"
-                        >
-                          <option value="tool">工具池 (haiku)</option>
-                          <option value="normal">普通池 (sonnet)</option>
-                          <option value="advanced">高级池 (opus)</option>
-                        </select>
+                      <div className="flex flex-col sm:flex-row gap-3 flex-1">
+                        {/* 搜索框 */}
+                        <div className="relative max-w-xs">
+                          <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="搜索模型..."
+                            className="w-full pl-9 pr-3 py-1.5 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                          />
+                          <Search className="w-4 h-4 text-surface-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        </div>
+
+                        {/* 池选择 */}
+                        <div className="flex items-center space-x-2">
+                          <span className="text-xs sm:text-sm text-surface-500 whitespace-nowrap">添加到池:</span>
+                          <select
+                            value={selectedPool}
+                            onChange={(e) => setSelectedPool(e.target.value as 'tool' | 'normal' | 'advanced')}
+                            className="px-3 py-1.5 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg text-sm"
+                          >
+                            <option value="tool">工具池 (haiku)</option>
+                            <option value="normal">普通池 (sonnet)</option>
+                            <option value="advanced">高级池 (opus)</option>
+                          </select>
+                        </div>
                       </div>
+
                       <button
                         onClick={() => handleAddSelectedToPool(provider.id)}
                         disabled={!selectedModels[provider.id]?.size}
                         className={clsx(
-                          'flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+                          'flex items-center justify-center px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap',
                           selectedModels[provider.id]?.size
                             ? 'bg-primary-500 text-white hover:bg-primary-600'
                             : 'bg-surface-200 text-surface-400 cursor-not-allowed'
@@ -232,7 +291,9 @@ export default function Providers() {
 
                     {/* 模型网格 */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                      {fetchedModels[provider.id].map(modelId => (
+                      {fetchedModels[provider.id]
+                        .filter(modelId => modelId.toLowerCase().includes(searchQuery.toLowerCase()))
+                        .map(modelId => (
                         <label
                           key={modelId}
                           className={clsx(
@@ -280,7 +341,7 @@ export default function Providers() {
             <Server className="w-12 h-12 text-surface-300 mx-auto mb-4" />
             <p className="text-surface-500">还没有添加服务商</p>
             <button
-              onClick={() => setShowAddModal(true)}
+              onClick={openCreateModal}
               className="mt-4 text-primary-500 hover:text-primary-600"
             >
               添加第一个服务商
@@ -289,41 +350,98 @@ export default function Providers() {
         )}
       </div>
 
-      {/* 添加服务商弹窗 */}
-      {showAddModal && (
-        <AddProviderModal onClose={() => setShowAddModal(false)} />
+      {/* 服务商弹窗 (添加/编辑) */}
+      {showModal && (
+        <ProviderModal
+          mode={modalMode}
+          initialData={editingProvider}
+          onClose={() => setShowModal(false)}
+        />
       )}
     </div>
   )
 }
 
-function AddProviderModal({ onClose }: { onClose: () => void }) {
+function ProviderModal({
+  mode,
+  initialData,
+  onClose
+}: {
+  mode: 'create' | 'edit'
+  initialData: Provider | null
+  onClose: () => void
+}) {
   const queryClient = useQueryClient()
   const [formData, setFormData] = useState({
     name: '',
     base_url: '',
     api_key: '',
     api_format: 'openai' as 'openai' | 'anthropic',
+    enabled: true,
   })
 
-  const mutation = useMutation({
+  // 初始化表单数据
+  useEffect(() => {
+    if (mode === 'edit' && initialData) {
+      setFormData({
+        name: initialData.name,
+        base_url: initialData.base_url,
+        api_key: '', // 编辑时不自动填充 key，只在需要修改时输入
+        api_format: initialData.api_format,
+        enabled: initialData.enabled,
+      })
+    } else {
+      setFormData({
+        name: '',
+        base_url: '',
+        api_key: '',
+        api_format: 'openai',
+        enabled: true,
+      })
+    }
+  }, [mode, initialData])
+
+  const createMutation = useMutation({
     mutationFn: createProvider,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] })
       onClose()
     },
+    onError: (error: any) => {
+      alert(`添加服务商失败: ${error?.response?.data?.detail || error.message || '未知错误'}`)
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: (data: any) => updateProvider(initialData!.id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers'] })
+      onClose()
+    },
+    onError: (error: any) => {
+      alert(`更新服务商失败: ${error?.response?.data?.detail || error.message || '未知错误'}`)
+    },
   })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    mutation.mutate(formData)
+    if (mode === 'create') {
+      createMutation.mutate(formData)
+    } else {
+      // 过滤掉空值（比如 api_key 没填就不更新）
+      const updateData: any = { ...formData }
+      if (!updateData.api_key) {
+        delete updateData.api_key
+      }
+      updateMutation.mutate(updateData)
+    }
   }
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-surface-800 rounded-2xl w-full max-w-md p-4 sm:p-6 animate-fadeIn">
         <h2 className="text-lg sm:text-xl font-semibold text-surface-900 dark:text-white mb-4 sm:mb-6">
-          添加服务商
+          {mode === 'create' ? '添加服务商' : '编辑服务商'}
         </h2>
 
         <form onSubmit={handleSubmit} className="space-y-3 sm:space-y-4">
@@ -353,19 +471,23 @@ function AddProviderModal({ onClose }: { onClose: () => void }) {
               className="w-full px-4 py-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-xs sm:text-sm"
               required
             />
+            <p className="mt-1 text-xs text-surface-500">
+              Docker 部署时请使用 host.docker.internal 访问主机
+            </p>
           </div>
 
           <div>
             <label className="block text-xs sm:text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">
               API Key
+              {mode === 'edit' && <span className="ml-2 text-xs font-normal text-surface-400">(留空保持不变)</span>}
             </label>
             <input
               type="password"
               value={formData.api_key}
               onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
-              placeholder="API 密钥"
+              placeholder={mode === 'edit' ? "******" : "API 密钥"}
               className="w-full px-4 py-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
-              required
+              required={mode === 'create'}
             />
           </div>
 
@@ -383,6 +505,21 @@ function AddProviderModal({ onClose }: { onClose: () => void }) {
             </select>
           </div>
 
+          {mode === 'edit' && (
+            <div className="flex items-center">
+              <input
+                id="provider-enabled"
+                type="checkbox"
+                checked={formData.enabled}
+                onChange={(e) => setFormData({ ...formData, enabled: e.target.checked })}
+                className="w-4 h-4 text-primary-500 border-surface-300 rounded focus:ring-primary-500"
+              />
+              <label htmlFor="provider-enabled" className="ml-2 text-sm text-surface-700 dark:text-surface-300">
+                启用此服务商
+              </label>
+            </div>
+          )}
+
           <div className="flex justify-end space-x-3 pt-3 sm:pt-4">
             <button
               type="button"
@@ -393,10 +530,10 @@ function AddProviderModal({ onClose }: { onClose: () => void }) {
             </button>
             <button
               type="submit"
-              disabled={mutation.isPending}
+              disabled={createMutation.isPending || updateMutation.isPending}
               className="px-4 py-2 text-sm bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors disabled:opacity-50"
             >
-              {mutation.isPending ? '添加中...' : '添加'}
+              {createMutation.isPending || updateMutation.isPending ? '保存中...' : '保存'}
             </button>
           </div>
         </form>

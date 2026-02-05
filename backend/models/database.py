@@ -9,23 +9,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship, DeclarativeBase
 
+from .enums import ApiFormat, PoolType
+
 
 class Base(DeclarativeBase):
     """SQLAlchemy 基类"""
     pass
-
-
-class ApiFormat(str, Enum):
-    """API 格式类型"""
-    OPENAI = "openai"           # /v1/chat/completions
-    ANTHROPIC = "anthropic"     # /v1/messages
-
-
-class PoolType(str, Enum):
-    """池类型"""
-    TOOL = "tool"
-    NORMAL = "normal"
-    ADVANCED = "advanced"
 
 
 class Provider(Base):
@@ -60,12 +49,16 @@ class ModelEndpoint(Base):
     model_id = Column(String(200), nullable=False, comment="模型ID，如 github-copilot/claude-haiku-4.5")
     pool_type = Column(SQLEnum(PoolType), nullable=True, comment="所属池类型，null表示未分配")
     enabled = Column(Boolean, default=True, comment="是否启用")
-    priority = Column(Integer, default=0, comment="优先级，数字越大越优先")
+    weight = Column(Integer, default=1, comment="权重，数字越大分配流量越多")
 
     # 状态
     is_cooling = Column(Boolean, default=False, comment="是否在冷却中")
     cooldown_until = Column(DateTime, nullable=True, comment="冷却结束时间")
     last_error = Column(Text, nullable=True, comment="最后错误信息")
+
+    # 请求间隔限制
+    min_interval_seconds = Column(Integer, default=0, comment="最小请求间隔(秒)，0表示无限制")
+    last_request_at = Column(DateTime, nullable=True, comment="最后请求时间")
 
     # 统计
     total_requests = Column(Integer, default=0)
@@ -94,6 +87,7 @@ class Pool(Base):
     # 配置
     cooldown_seconds = Column(Integer, default=60)
     max_retries = Column(Integer, default=3)
+    timeout_seconds = Column(Integer, default=60, comment="池默认请求超时(秒)")
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

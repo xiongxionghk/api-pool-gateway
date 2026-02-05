@@ -7,7 +7,8 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from models.database import Provider, ModelEndpoint, Pool, RequestLog, PoolType
+from models.database import Provider, ModelEndpoint, Pool, RequestLog
+from models.enums import PoolType
 
 
 # ==================== Provider CRUD ====================
@@ -85,7 +86,7 @@ async def get_endpoints_by_pool(db: AsyncSession, pool_type: PoolType) -> List[M
             ModelEndpoint.pool_type == pool_type,
             ModelEndpoint.enabled == True
         )
-        .order_by(ModelEndpoint.provider_id, ModelEndpoint.priority.desc())
+        .order_by(ModelEndpoint.weight.desc())  # Use weight for sorting
     )
     return list(result.scalars().all())
 
@@ -162,19 +163,32 @@ async def increment_endpoint_stats(
         old_avg = endpoint.avg_latency_ms
         old_count = endpoint.success_requests
         new_avg = (old_avg * old_count + latency_ms) / new_success if new_success > 0 else latency_ms
+
+        # 更新最后请求时间
+        await db.execute(
+            update(ModelEndpoint)
+            .where(ModelEndpoint.id == endpoint_id)
+            .values(
+                total_requests=new_total,
+                success_requests=new_success,
+                error_requests=new_error,
+                avg_latency_ms=new_avg,
+                last_request_at=datetime.utcnow()
+            )
+        )
     else:
         new_avg = endpoint.avg_latency_ms
 
-    await db.execute(
-        update(ModelEndpoint)
-        .where(ModelEndpoint.id == endpoint_id)
-        .values(
-            total_requests=new_total,
-            success_requests=new_success,
-            error_requests=new_error,
-            avg_latency_ms=new_avg
+        await db.execute(
+            update(ModelEndpoint)
+            .where(ModelEndpoint.id == endpoint_id)
+            .values(
+                total_requests=new_total,
+                success_requests=new_success,
+                error_requests=new_error,
+                avg_latency_ms=new_avg
+            )
         )
-    )
 
 
 # ==================== Pool CRUD ====================
@@ -195,6 +209,12 @@ async def get_or_create_pool(db: AsyncSession, pool_type: PoolType, virtual_mode
     return pool
 
 
+async def get_pool_by_type(db: AsyncSession, pool_type: PoolType) -> Optional[Pool]:
+    """获取池配置"""
+    result = await db.execute(select(Pool).where(Pool.pool_type == pool_type))
+    return result.scalar_one_or_none()
+
+
 async def get_all_pools(db: AsyncSession) -> List[Pool]:
     """获取所有池"""
     result = await db.execute(select(Pool))
@@ -208,6 +228,20 @@ async def update_pool_index(db: AsyncSession, pool_type: PoolType, new_index: in
         .where(Pool.pool_type == pool_type)
         .values(current_provider_index=new_index)
     )
+
+
+async def update_pool(db: AsyncSession, pool_type: PoolType, **kwargs) -> Optional[Pool]:
+    """更新池配置"""
+    await db.execute(
+        update(Pool)
+        .where(Pool.pool_type == pool_type)
+        .values(**kwargs)
+    )
+
+    result = await db.execute(
+        select(Pool).where(Pool.pool_type == pool_type)
+    )
+    return result.scalar_one_or_none()
 
 
 # ==================== RequestLog CRUD ====================

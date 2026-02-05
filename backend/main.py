@@ -95,29 +95,40 @@ async def health_check():
 
 
 # 静态文件（前端）
+# 兼容 Docker 和本地开发环境的路径查找
+# 本地开发: backend/main.py -> ../frontend/dist
+# Docker: /app/main.py -> /app/frontend/dist (如果 backend 内容直接拷到了 /app)
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+
+# 如果第一种路径不存在，尝试 Docker 环境常见的路径结构 (如果 main.py 在 /app 下)
+if not frontend_dist.exists():
+    frontend_dist = Path(__file__).parent / "frontend" / "dist"
+
 if frontend_dist.exists():
+    # 静态资源
     app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="assets")
 
+    # 前端首页
     @app.get("/")
     async def serve_frontend():
         """服务前端首页"""
         return FileResponse(frontend_dist / "index.html")
 
-    @app.get("/{path:path}")
-    async def serve_frontend_routes(path: str):
-        """服务前端路由"""
-        # 如果是 API 路由，跳过
-        if path.startswith("v1/") or path.startswith("admin/") or path == "health":
-            return JSONResponse(status_code=404, content={"error": "Not found"})
-
-        # 尝试返回静态文件
-        file_path = frontend_dist / path
-        if file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
-
-        # 否则返回 index.html（SPA 路由）
+    # 前端 SPA 路由 - 这些是前端页面路由
+    @app.get("/providers")
+    @app.get("/pools")
+    @app.get("/pools/{pool_type}")
+    @app.get("/logs")
+    @app.get("/settings")
+    async def serve_frontend_spa():
+        """服务前端 SPA 页面"""
         return FileResponse(frontend_dist / "index.html")
+
+    # 静态文件
+    @app.get("/favicon.svg")
+    async def serve_favicon():
+        """服务 favicon"""
+        return FileResponse(frontend_dist / "favicon.svg")
 else:
     @app.get("/")
     async def no_frontend():

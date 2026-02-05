@@ -4,6 +4,9 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.pool import StaticPool
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from config import get_settings
 from models.database import Base
@@ -11,11 +14,24 @@ from models.database import Base
 settings = get_settings()
 
 # 创建异步引擎
+# SQLite 需要特殊配置来避免并发锁定问题
 engine = create_async_engine(
     settings.database_url,
     echo=False,
-    future=True
+    future=True,
+    # SQLite 需要使用 StaticPool 来避免多线程问题
+    poolclass=StaticPool if "sqlite" in settings.database_url else None,
+    # SQLite 需要开启 check_same_thread=False
+    connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
 )
+
+# 确保 SQLite 开启外键约束
+if "sqlite" in settings.database_url:
+    @event.listens_for(engine.sync_engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 # 创建异步会话工厂
 async_session_factory = async_sessionmaker(

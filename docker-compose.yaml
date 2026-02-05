@@ -9,10 +9,13 @@ services:
     volumes:
       # 持久化数据
       - ./data:/app/data
+      # 挂载前端构建产物，避免每次重建镜像
+      - ./frontend/dist:/app/frontend/dist
     environment:
       # 服务配置
       - HOST=0.0.0.0
       - API_PORT=8899
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/gateway.db
       # 管理后台密码
       - ADMIN_PASSWORD=admin123
       # 池配置

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_db
 from core import get_forwarder
-from models.database import PoolType
+from models.enums import PoolType
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,9 @@ async def create_message(
 
     # 解析池类型
     pool_type = _resolve_pool_type(model)
-    stream = body.get("stream", False)
+    # 强制使用流式，防止预热机制导致超时
+    stream = True
+    body["stream"] = True
 
     logger.info(f"[Anthropic API] 收到请求: model={model}, pool={pool_type.value}, stream={stream}")
 
@@ -84,3 +86,33 @@ async def create_message(
 
     # 非流式响应
     return response_body
+
+
+@router.get("/models")
+async def list_models():
+    """
+    [非标准] 列出可用的虚拟模型 - Anthropic 格式
+    虽然 Anthropic 官方 API 没有这个端点，但为了兼容性加上
+    """
+    return {
+        "models": [
+            {
+                "id": settings.virtual_model_tool,
+                "display_name": "Tool Pool (Haiku)",
+                "type": "model",
+                "created_at": "2024-01-01T00:00:00Z"
+            },
+            {
+                "id": settings.virtual_model_normal,
+                "display_name": "Normal Pool (Sonnet)",
+                "type": "model",
+                "created_at": "2024-01-01T00:00:00Z"
+            },
+            {
+                "id": settings.virtual_model_advanced,
+                "display_name": "Advanced Pool (Opus)",
+                "type": "model",
+                "created_at": "2024-01-01T00:00:00Z"
+            },
+        ]
+    }
