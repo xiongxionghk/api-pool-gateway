@@ -11,6 +11,7 @@ import {
   Layers,
   Edit2,
   Search,
+  PlusCircle,
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -34,6 +35,7 @@ export default function Providers() {
   const [selectedModels, setSelectedModels] = useState<Record<number, Set<string>>>({})
   const [selectedPool, setSelectedPool] = useState<'tool' | 'normal' | 'advanced'>('normal')
   const [searchQuery, setSearchQuery] = useState('')
+  const [customModelId, setCustomModelId] = useState('')
 
   const { data: providers, isLoading } = useQuery({
     queryKey: ['providers'],
@@ -74,6 +76,7 @@ export default function Providers() {
   const handleFetchModels = (providerId: number) => {
     setExpandedProvider(expandedProvider === providerId ? null : providerId)
     setSearchQuery('') // 重置搜索
+    setCustomModelId('') // 重置自定义输入
     if (!fetchedModels[providerId]) {
       fetchModelsMutation.mutate(providerId)
     }
@@ -90,6 +93,33 @@ export default function Providers() {
       }
       return { ...prev, [providerId]: updated }
     })
+  }
+
+  const handleAddCustomModel = (providerId: number) => {
+    if (!customModelId.trim()) return
+    const modelId = customModelId.trim()
+
+    setFetchedModels(prev => {
+      const current = prev[providerId] || []
+      // 如果已存在，不再重复添加，但会确保它被选中
+      if (current.includes(modelId)) {
+        // 自动选中的逻辑在下面统一处理
+      } else {
+        return { ...prev, [providerId]: [modelId, ...current] } // 添加到最前面
+      }
+      return prev
+    })
+
+    // 自动选中
+    setSelectedModels(prev => {
+      const current = prev[providerId] || new Set()
+      const updated = new Set(current)
+      updated.add(modelId)
+      return { ...prev, [providerId]: updated }
+    })
+
+    setCustomModelId('')
+    setSearchQuery('') // 清除搜索以便看到新添加的模型
   }
 
   const handleAddSelectedToPool = async (providerId: number) => {
@@ -244,6 +274,44 @@ export default function Providers() {
                   </div>
                 ) : fetchedModels[provider.id] ? (
                   <div className="space-y-4">
+                    {/* 自定义添加模型 */}
+                    <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                      <div className="flex items-center gap-2 mb-2">
+                        <PlusCircle className="w-4 h-4 text-amber-600 dark:text-amber-500" />
+                        <span className="text-xs font-medium text-amber-800 dark:text-amber-400">
+                          手动添加自定义模型 ID
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={customModelId}
+                          onChange={(e) => setCustomModelId(e.target.value)}
+                          placeholder="例如: claude-3-opus-20240229 或自定义ID"
+                          className="flex-1 px-3 py-2 bg-white dark:bg-surface-800 border border-amber-300 dark:border-amber-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleAddCustomModel(provider.id)
+                          }}
+                        />
+                        <button
+                          onClick={() => handleAddCustomModel(provider.id)}
+                          disabled={!customModelId.trim()}
+                          className={clsx(
+                            "px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center whitespace-nowrap",
+                            customModelId.trim()
+                              ? "bg-amber-500 text-white hover:bg-amber-600"
+                              : "bg-surface-200 text-surface-400 cursor-not-allowed"
+                          )}
+                        >
+                          <PlusCircle className="w-4 h-4 mr-1.5" />
+                          添加
+                        </button>
+                      </div>
+                      <p className="mt-2 text-xs text-amber-700 dark:text-amber-500">
+                        用于服务商模型列表更新不及时或需要添加未列出的模型 ID
+                      </p>
+                    </div>
+
                     {/* 池选择和工具栏 */}
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                       <div className="flex flex-col sm:flex-row gap-3 flex-1">
