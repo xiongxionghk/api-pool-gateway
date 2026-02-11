@@ -28,8 +28,10 @@ class RetryConfig:
     BACKOFF_BASE = 1.5
     # 最大退避时间(秒)
     BACKOFF_MAX = 30.0
-    # 可重试的HTTP状态码
+    # 当前端点可立即重试的HTTP状态码
     RETRIABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+    # 不应故障转移到其他端点的状态码（通常是请求体本身有问题）
+    NO_FAILOVER_STATUS_CODES = {400, 422}
     # 可重试的异常类型
     RETRIABLE_EXCEPTIONS = (
         httpx.ConnectError,
@@ -134,18 +136,20 @@ class Forwarder:
                     is_status_error = isinstance(e, httpx.HTTPStatusError)
                     status_code = e.response.status_code if is_status_error else None
 
-                    # 检查状态码是否可重试
+                    # 检查状态码是否可在当前端点立即重试，以及是否允许故障转移
                     should_retry = True
-                    if is_status_error and status_code not in RetryConfig.RETRIABLE_STATUS_CODES:
-                        # 4xx 客户端错误 (非429) 不应该重试
-                        should_retry = False
+                    should_failover = True
+
+                    if is_status_error:
                         error_msg = f"HTTP {status_code}: {e.response.text[:200]}"
+                        should_retry = status_code in RetryConfig.RETRIABLE_STATUS_CODES
+                        should_failover = status_code not in RetryConfig.NO_FAILOVER_STATUS_CODES
                     else:
                         error_msg = f"{error_type}: {str(e)}"
 
                     logger.error(f"[Forwarder] 请求失败 (retry={retry}): {error_msg}")
 
-                    # 如果是最后一次单端点重试，记录失败并决定是否切换端点
+                    # 如果是最后一次单端点重试，或当前状态码不适合继续重试当前端点
                     if retry == RetryConfig.ENDPOINT_RETRIES - 1 or not should_retry:
                         await self.pool_mgr.mark_failure(db, endpoint.endpoint_id, error_msg)
                         await self._log_request(
@@ -155,11 +159,11 @@ class Forwarder:
                         )
                         last_error = error_msg
 
-                        # 如果是不可重试的状态码(如400/401)，直接结束整个流程，返回错误
-                        if not should_retry:
+                        # 对于请求体本身错误（如400/422），直接返回，避免无意义轮询
+                        if not should_failover:
                             return None, None, error_msg
 
-                        # 否则跳出单端点循环，进入下一个端点
+                        # 否则切换到下一个端点（包含401/403等情况）
                         break
 
                     # 还有单端点重试机会，继续循环

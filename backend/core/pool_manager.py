@@ -49,7 +49,7 @@ class PoolManager:
         """
         async with self._lock:
             # 1. 获取池内所有启用的端点
-            all_endpoints = await crud.get_endpoints_by_pool(db, pool_type)
+            all_endpoints = await crud.get_endpoints_by_pool(db, pool_type, enabled_only=True)
 
             # 2. 过滤掉冷却中的端点和在间隔期内的端点
             now = datetime.utcnow()
@@ -194,7 +194,7 @@ class PoolManager:
 
     async def get_pool_status(self, db: AsyncSession, pool_type: PoolType) -> Dict[str, Any]:
         """获取池状态"""
-        endpoints = await crud.get_endpoints_by_pool(db, pool_type)
+        endpoints = await crud.get_endpoints_by_pool(db, pool_type, enabled_only=False)
         provider_groups = await self._group_endpoints_by_provider(endpoints)
 
         providers_status = []
@@ -231,7 +231,7 @@ class PoolManager:
                 "base_url": provider.base_url,
                 "api_format": provider.api_format.value,
                 "models": models_status,
-                "healthy_count": len([m for m in models_status if not m["is_cooling"]]),
+                "healthy_count": len([m for m in models_status if m["enabled"] and not m["is_cooling"]]),
                 "total_count": len(models_status),
             })
 

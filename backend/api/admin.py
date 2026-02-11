@@ -220,7 +220,7 @@ async def list_endpoints(
     if provider_id:
         endpoints = await crud.get_endpoints_by_provider(db, provider_id)
     elif pool_type:
-        endpoints = await crud.get_endpoints_by_pool(db, pool_type)
+        endpoints = await crud.get_endpoints_by_pool(db, pool_type, enabled_only=False)
     else:
         # 获取所有
         providers = await crud.get_all_providers(db)
@@ -395,7 +395,7 @@ async def list_pools(db: AsyncSession = Depends(get_db)):
 
     result = []
     for pool_type in PoolType:
-        endpoints = await crud.get_endpoints_by_pool(db, pool_type)
+        endpoints = await crud.get_endpoints_by_pool(db, pool_type, enabled_only=False)
         provider_ids = set(ep.provider_id for ep in endpoints)
         healthy = len([ep for ep in endpoints if ep.enabled and not ep.is_cooling])
 
@@ -469,7 +469,7 @@ async def update_pool_config(
     await db.commit()
 
     # 获取统计信息
-    endpoints = await crud.get_endpoints_by_pool(db, pool_type)
+    endpoints = await crud.get_endpoints_by_pool(db, pool_type, enabled_only=False)
     provider_ids = set(ep.provider_id for ep in endpoints)
     healthy = len([ep for ep in endpoints if ep.enabled and not ep.is_cooling])
 

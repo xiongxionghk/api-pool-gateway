@@ -77,17 +77,16 @@ async def get_endpoint(db: AsyncSession, endpoint_id: int) -> Optional[ModelEndp
     return result.scalar_one_or_none()
 
 
-async def get_endpoints_by_pool(db: AsyncSession, pool_type: PoolType) -> List[ModelEndpoint]:
-    """获取池内所有端点"""
-    result = await db.execute(
-        select(ModelEndpoint)
-        .options(selectinload(ModelEndpoint.provider))
-        .where(
-            ModelEndpoint.pool_type == pool_type,
-            ModelEndpoint.enabled == True
-        )
-        .order_by(ModelEndpoint.weight.desc())  # Use weight for sorting
+async def get_endpoints_by_pool(db: AsyncSession, pool_type: PoolType, enabled_only: bool = False) -> List[ModelEndpoint]:
+    """获取池内所有端点（默认包含已禁用端点）"""
+    query = select(ModelEndpoint).options(selectinload(ModelEndpoint.provider)).where(
+        ModelEndpoint.pool_type == pool_type
     )
+
+    if enabled_only:
+        query = query.where(ModelEndpoint.enabled == True)
+
+    result = await db.execute(query.order_by(ModelEndpoint.weight.desc()))
     return list(result.scalars().all())
 
 

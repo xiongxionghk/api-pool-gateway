@@ -85,6 +85,7 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
   const [cooldown, setCooldown] = useState<string>('')
   const [reqTimeout, setReqTimeout] = useState<string>('')
   const [modelFilter, setModelFilter] = useState('')
+  const [showDisabled, setShowDisabled] = useState(true)
 
   const { data: poolDetail, isLoading } = useQuery({
     queryKey: ['pool', poolType],
@@ -156,22 +157,37 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
     }
   }
 
-  // 根据搜索词过滤模型
+  // 根据搜索词和显示设置过滤模型
   const filteredProviders = useMemo(() => {
-    if (!poolDetail || !modelFilter.trim()) {
-      return poolDetail?.providers || []
-    }
-    const keyword = modelFilter.toLowerCase().trim()
-    return poolDetail.providers
-      .map(provider => ({
-        ...provider,
-        models: provider.models.filter(m =>
-          m.model_id.toLowerCase().includes(keyword) ||
-          provider.provider_name.toLowerCase().includes(keyword)
-        )
-      }))
+    if (!poolDetail) return []
+
+    // 1. 处理过滤逻辑
+    const result = poolDetail.providers
+      .map(provider => {
+        // 先按显示设置过滤
+        let models = provider.models;
+        if (!showDisabled) {
+          models = models.filter(m => m.enabled);
+        }
+
+        // 再按搜索词过滤
+        if (modelFilter.trim()) {
+          const keyword = modelFilter.toLowerCase().trim()
+          models = models.filter(m =>
+            m.model_id.toLowerCase().includes(keyword) ||
+            provider.provider_name.toLowerCase().includes(keyword)
+          )
+        }
+
+        return {
+          ...provider,
+          models
+        }
+      })
       .filter(provider => provider.models.length > 0)
-  }, [poolDetail, modelFilter])
+
+    return result;
+  }, [poolDetail, modelFilter, showDisabled])
 
   // 计算总权重
   const totalWeight = filteredProviders.reduce(
@@ -304,22 +320,38 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
 
           {/* 按服务商分组的端点列表 */}
       <div className="space-y-4">
-        {/* 搜索框 */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" />
-          <input
-            type="text"
-            placeholder="搜索模型ID或服务商名称..."
-            value={modelFilter}
-            onChange={(e) => setModelFilter(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 text-sm bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-700 rounded-lg focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-shadow"
-          />
+        {/* 搜索框 + 显示开关 */}
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" />
+            <input
+              type="text"
+              placeholder="搜索模型ID或服务商名称..."
+              value={modelFilter}
+              onChange={(e) => setModelFilter(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 text-sm bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-700 rounded-lg focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-shadow"
+            />
+          </div>
+
+          <label className="flex items-center gap-2 px-3 py-2 bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-700 rounded-lg text-xs sm:text-sm text-surface-600 dark:text-surface-300 whitespace-nowrap">
+            <input
+              type="checkbox"
+              checked={showDisabled}
+              onChange={(e) => setShowDisabled(e.target.checked)}
+              className="w-4 h-4 text-primary-500 border-surface-300 rounded focus:ring-primary-500"
+            />
+            显示已禁用
+          </label>
         </div>
 
         {filteredProviders.length === 0 ? (
           <div className="text-center py-8 bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700">
             <p className="text-surface-500 text-sm">
-              {modelFilter ? '未找到匹配的模型' : '该池还没有添加任何模型'}
+              {modelFilter
+                ? '未找到匹配的模型'
+                : showDisabled
+                ? '该池还没有添加任何模型'
+                : '未找到启用中的模型（可勾选“显示已禁用”查看全部）'}
             </p>
           </div>
         ) : (
@@ -364,21 +396,16 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
                 >
                   <div className="flex items-start sm:items-center space-x-3 sm:space-x-4 min-w-0">
                     {/* 状态图标 */}
-                    <button
-                      onClick={() => updateEndpointMutation.mutate({
-                        id: model.id,
-                        data: { enabled: !model.enabled }
-                      })}
+                    <div
                       className={clsx(
-                        "p-2 rounded-lg flex-shrink-0 transition-colors",
+                        "p-2 rounded-lg flex-shrink-0",
                         model.is_cooling
-                          ? "bg-blue-50 dark:bg-blue-900/20 cursor-not-allowed"
+                          ? "bg-blue-50 dark:bg-blue-900/20"
                           : model.enabled
-                          ? "bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/30"
-                          : "bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30"
+                          ? "bg-green-50 dark:bg-green-900/20"
+                          : "bg-red-50 dark:bg-red-900/20"
                       )}
-                      disabled={model.is_cooling || updateEndpointMutation.isPending}
-                      title={model.enabled ? "点击禁用" : "点击启用"}
+                      title={model.is_cooling ? "冷却中" : model.enabled ? "已启用" : "已禁用"}
                     >
                       {model.is_cooling ? (
                         <Snowflake className="w-4 h-4 text-blue-500 animate-pulse-subtle" />
@@ -387,7 +414,7 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
                       ) : (
                         <XCircle className="w-4 h-4 text-red-500" />
                       )}
-                    </button>
+                    </div>
 
                     {/* 模型信息 */}
                     <div className="min-w-0">
@@ -487,6 +514,25 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
                       </p>
                       <p className="text-xs text-surface-500">请求</p>
                     </div>
+
+                    <button
+                      onClick={() => updateEndpointMutation.mutate({
+                        id: model.id,
+                        data: { enabled: !model.enabled }
+                      })}
+                      disabled={model.is_cooling || updateEndpointMutation.isPending}
+                      className={clsx(
+                        'px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                        model.is_cooling || updateEndpointMutation.isPending
+                          ? 'bg-surface-200 text-surface-400 dark:bg-surface-700 dark:text-surface-500 cursor-not-allowed'
+                          : model.enabled
+                          ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30'
+                          : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/30'
+                      )}
+                      title={model.enabled ? '禁用此模型' : '启用此模型'}
+                    >
+                      {model.enabled ? '禁用' : '启用'}
+                    </button>
 
                     <button
                       onClick={() => handleDelete(model.id, model.model_id)}
