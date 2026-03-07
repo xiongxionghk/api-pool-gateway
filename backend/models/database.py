@@ -60,6 +60,9 @@ class ModelEndpoint(Base):
     min_interval_seconds = Column(Integer, default=0, comment="最小请求间隔(秒)，0表示无限制")
     last_request_at = Column(DateTime, nullable=True, comment="最后请求时间")
 
+    # 上下文窗口限制
+    context_window = Column(Integer, nullable=True, comment="最大上下文窗口(tokens)，null表示不限制")
+
     # 统计
     total_requests = Column(Integer, default=0)
     success_requests = Column(Integer, default=0)
@@ -117,7 +120,8 @@ class RequestLog(Base):
     input_tokens = Column(Integer, nullable=True)
     output_tokens = Column(Integer, nullable=True)
 
-    # 请求摘要
-    request_summary = Column(JSON, nullable=True)
+    # 请求和响应详情
+    request_body = Column(JSON, nullable=True, comment="请求体")
+    response_body = Column(JSON, nullable=True, comment="响应体")
 
     created_at = Column(DateTime, default=datetime.utcnow)

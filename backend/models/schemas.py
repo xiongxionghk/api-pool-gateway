@@ -70,6 +70,7 @@ class ModelEndpointCreate(BaseModel):
     model_id: str
     pool_type: PoolType
     weight: int = 1
+    context_window: Optional[int] = None
 
 
 class ModelEndpointUpdate(BaseModel):
@@ -78,6 +79,7 @@ class ModelEndpointUpdate(BaseModel):
     enabled: Optional[bool] = None
     weight: Optional[int] = None
     min_interval_seconds: Optional[int] = None
+    context_window: Optional[int] = None
 
 
 class ModelEndpointResponse(BaseModel):
@@ -90,6 +92,7 @@ class ModelEndpointResponse(BaseModel):
     enabled: bool
     weight: int
     min_interval_seconds: int = 0
+    context_window: Optional[int] = None
     is_cooling: bool
     cooldown_until: Optional[datetime]
     last_error: Optional[str]
@@ -155,8 +158,8 @@ class StatsResponse(BaseModel):
 
 # ==================== 日志 ====================
 
-class LogResponse(BaseModel):
-    """日志响应"""
+class LogListItem(BaseModel):
+    """日志列表项（轻量，不含请求/响应体）"""
     id: int
     pool_type: PoolType
     requested_model: str
@@ -174,10 +177,31 @@ class LogResponse(BaseModel):
         from_attributes = True
 
 
+class LogResponse(BaseModel):
+    """日志详情响应（完整，含请求/响应体）"""
+    id: int
+    pool_type: PoolType
+    requested_model: str
+    actual_model: str
+    provider_name: str
+    success: bool
+    status_code: Optional[int]
+    error_message: Optional[str]
+    latency_ms: int
+    input_tokens: Optional[int]
+    output_tokens: Optional[int]
+    request_body: Optional[Dict[str, Any]] = None
+    response_body: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class LogListResponse(BaseModel):
     """日志列表响应"""
     total: int
-    logs: List[LogResponse]
+    logs: List[LogListItem]
 
 
 # ==================== 通用 ====================

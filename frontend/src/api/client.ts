@@ -29,6 +29,8 @@ export interface ModelEndpoint {
   pool_type: 'tool' | 'normal' | 'advanced' | null
   enabled: boolean
   weight: number
+  min_interval_seconds: number
+  context_window: number | null
   is_cooling: boolean
   cooldown_until: string | null
   last_error: string | null
@@ -73,6 +75,7 @@ export interface PoolDetail {
       success_rate: number
       avg_latency_ms: number
       min_interval_seconds: number
+      context_window: number | null
     }[]
     healthy_count: number
     total_count: number
@@ -97,7 +100,7 @@ export interface Stats {
   }>
 }
 
-export interface LogEntry {
+export interface LogListItem {
   id: number
   pool_type: string
   requested_model: string
@@ -110,6 +113,11 @@ export interface LogEntry {
   input_tokens: number | null
   output_tokens: number | null
   created_at: string
+}
+
+export interface LogEntry extends LogListItem {
+  request_body: Record<string, any> | null
+  response_body: Record<string, any> | null
 }
 
 // API 函数
@@ -142,6 +150,7 @@ export const createEndpoint = (data: {
   model_id: string
   pool_type: 'tool' | 'normal' | 'advanced'
   weight?: number
+  context_window?: number
 }) => api.post<ModelEndpoint>('/endpoints', data).then(r => r.data)
 
 export const batchCreateEndpoints = (
@@ -176,7 +185,10 @@ export const fetchLogs = (params?: {
   pool_type?: string
   success?: boolean
   provider_name?: string
-}) => api.get<{ total: number; logs: LogEntry[] }>('/logs', { params }).then(r => r.data)
+}) => api.get<{ total: number; logs: LogListItem[] }>('/logs', { params }).then(r => r.data)
+
+export const fetchLogDetail = (logId: number) =>
+  api.get<LogEntry>(`/logs/${logId}`).then(r => r.data)
 
 export const clearLogs = () =>
   api.delete('/logs').then(r => r.data)

@@ -13,7 +13,7 @@ from models import (
     ProviderCreate, ProviderUpdate, ProviderResponse, ProviderWithModels,
     ModelEndpointCreate, ModelEndpointUpdate, ModelEndpointResponse,
     PoolResponse, PoolEndpointsResponse, PoolUpdate,
-    StatsResponse, LogResponse, LogListResponse,
+    StatsResponse, LogListItem, LogResponse, LogListResponse,
     MessageResponse, FetchModelsResponse,
 )
 from models.database import Provider, ModelEndpoint
@@ -242,6 +242,8 @@ async def list_endpoints(
             pool_type=ep.pool_type,
             enabled=ep.enabled,
             weight=ep.weight,
+            min_interval_seconds=ep.min_interval_seconds or 0,
+            context_window=ep.context_window,
             is_cooling=ep.is_cooling,
             cooldown_until=ep.cooldown_until,
             last_error=ep.last_error,
@@ -271,7 +273,8 @@ async def create_endpoint(
         provider_id=data.provider_id,
         model_id=data.model_id,
         pool_type=data.pool_type,
-        weight=data.weight
+        weight=data.weight,
+        context_window=data.context_window,
     )
 
     await db.commit()
@@ -283,6 +286,8 @@ async def create_endpoint(
         pool_type=endpoint.pool_type,
         enabled=endpoint.enabled,
         weight=endpoint.weight,
+        min_interval_seconds=endpoint.min_interval_seconds or 0,
+        context_window=endpoint.context_window,
         is_cooling=False,
         cooldown_until=None,
         last_error=None,
@@ -361,6 +366,8 @@ async def update_endpoint(
         pool_type=endpoint.pool_type,
         enabled=endpoint.enabled,
         weight=endpoint.weight,
+        min_interval_seconds=endpoint.min_interval_seconds or 0,
+        context_window=endpoint.context_window,
         is_cooling=endpoint.is_cooling,
         cooldown_until=endpoint.cooldown_until,
         last_error=endpoint.last_error,
@@ -496,14 +503,14 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 
 @router.get("/logs", response_model=LogListResponse)
 async def get_logs(
-    limit: int = Query(default=100, le=1000),
+    limit: int = Query(default=10, le=100),
     offset: int = Query(default=0, ge=0),
     pool_type: Optional[PoolType] = None,
     success: Optional[bool] = None,
     provider_name: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """获取请求日志"""
+    """获取请求日志列表（轻量，不含请求体和响应体）"""
     logs, total = await crud.get_logs(
         db,
         limit=limit,
@@ -515,20 +522,45 @@ async def get_logs(
 
     return LogListResponse(
         total=total,
-        logs=[LogResponse(
-            id=log.id,
-            pool_type=log.pool_type,
-            requested_model=log.requested_model or "",
-            actual_model=log.actual_model or "",
-            provider_name=log.provider_name or "",
-            success=log.success,
-            status_code=log.status_code,
-            error_message=log.error_message,
-            latency_ms=log.latency_ms,
-            input_tokens=log.input_tokens,
-            output_tokens=log.output_tokens,
-            created_at=log.created_at,
+        logs=[LogListItem(
+            id=log[0],
+            pool_type=log[1],
+            requested_model=log[2] or "",
+            actual_model=log[3] or "",
+            provider_name=log[4] or "",
+            success=log[5],
+            status_code=log[6],
+            error_message=log[7],
+            latency_ms=log[8],
+            input_tokens=log[9],
+            output_tokens=log[10],
+            created_at=log[11],
         ) for log in logs]
+    )
+
+
+@router.get("/logs/{log_id}", response_model=LogResponse)
+async def get_log_detail(log_id: int, db: AsyncSession = Depends(get_db)):
+    """获取单条日志详情"""
+    log = await crud.get_log_by_id(db, log_id)
+    if not log:
+        raise HTTPException(status_code=404, detail="日志不存在")
+
+    return LogResponse(
+        id=log.id,
+        pool_type=log.pool_type,
+        requested_model=log.requested_model or "",
+        actual_model=log.actual_model or "",
+        provider_name=log.provider_name or "",
+        success=log.success,
+        status_code=log.status_code,
+        error_message=log.error_message,
+        latency_ms=log.latency_ms,
+        input_tokens=log.input_tokens,
+        output_tokens=log.output_tokens,
+        request_body=log.request_body,
+        response_body=log.response_body,
+        created_at=log.created_at,
     )
 
 

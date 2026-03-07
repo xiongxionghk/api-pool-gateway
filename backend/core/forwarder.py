@@ -7,6 +7,7 @@ import asyncio
 from typing import Optional, Dict, Any, AsyncIterator, List
 
 import httpx
+import tiktoken
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import RequestLog
@@ -15,6 +16,99 @@ from db import crud
 from .pool_manager import get_pool_manager, SelectedEndpoint
 
 logger = logging.getLogger(__name__)
+
+IMAGE_TOKEN_COST = 1400
+IMAGE_BLOCK_TYPES = {"image", "image_url", "input_image"}
+
+
+def count_image_tokens(request_body: Dict[str, Any]) -> int:
+    """统计请求中的图片 token 预估值"""
+    image_count = 0
+
+    system = request_body.get("system", "")
+    if isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and block.get("type") in IMAGE_BLOCK_TYPES:
+                image_count += 1
+
+    for msg in request_body.get("messages", []):
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in IMAGE_BLOCK_TYPES:
+                    image_count += 1
+
+    return image_count * IMAGE_TOKEN_COST
+
+
+def calculate_request_tokens(request_body: Dict[str, Any]) -> int:
+    """
+    使用 tiktoken 计算请求输入所需的总 token 数（文本输入 + 图片输入）
+
+    Args:
+        request_body: 请求体，包含 messages、system 等字段
+
+    Returns:
+        预计请求输入 token 数（不含输出预留）
+    """
+    try:
+        # 使用 gpt-4 编码器（通用性较好）
+        enc = tiktoken.encoding_for_model("gpt-4")
+    except Exception:
+        # 回退到 cl100k_base
+        enc = tiktoken.get_encoding("cl100k_base")
+
+    # 提取所有文本内容
+    text_parts = []
+
+    # 提取 system
+    system = request_body.get("system", "")
+    if isinstance(system, str):
+        text_parts.append(system)
+    elif isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and "text" in block:
+                text_parts.append(block["text"])
+
+    # 提取 messages
+    for msg in request_body.get("messages", []):
+        if not isinstance(msg, dict):
+            continue
+
+        # 添加 role
+        text_parts.append(msg.get("role", ""))
+
+        # 提取 content
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    if "text" in block:
+                        text_parts.append(block["text"])
+                    # 图片等多模态内容暂时忽略，实际会占用 token 但这里简化处理
+
+    # 计算输入 token
+    full_text = "\n".join(text_parts)
+    input_tokens = len(enc.encode(full_text))
+    image_tokens = count_image_tokens(request_body)
+
+    # 请求输入总大小（不含输出预留）
+    total_input_tokens = input_tokens + image_tokens
+
+    if image_tokens > 0:
+        logger.info(
+            f"[TokenCalc] 请求输入={total_input_tokens} tokens (文本={input_tokens}, 图片={image_tokens})"
+        )
+    else:
+        logger.info(
+            f"[TokenCalc] 请求输入={total_input_tokens} tokens (文本={input_tokens})"
+        )
+
+    return total_input_tokens
 
 
 # 重试配置
@@ -70,12 +164,16 @@ class Forwarder:
         # 记录原始请求的模型名
         original_model = request_body.get("model", "unknown")
 
+        # 计算本次请求所需的 token 总量
+        required_tokens = calculate_request_tokens(request_body)
+        logger.info(f"[Forwarder] 请求预计需要 {required_tokens} tokens")
+
         # 上一次错误信息，用于最终返回
         last_error = ""
 
         # 跨端点尝试循环
         for attempt in range(RetryConfig.MAX_ENDPOINT_ATTEMPTS):
-            endpoint = await self.pool_mgr.select_endpoint(db, pool_type)
+            endpoint = await self.pool_mgr.select_endpoint(db, pool_type, required_tokens=required_tokens)
             if not endpoint:
                 last_error = "没有可用的端点"
                 break
@@ -155,7 +253,8 @@ class Forwarder:
                         await self._log_request(
                             db, pool_type, original_model, endpoint,
                             success=False, latency_ms=latency_ms,
-                            status_code=status_code, error_message=error_msg
+                            status_code=status_code, error_message=error_msg,
+                            request_body=body
                         )
                         last_error = error_msg
 
@@ -179,7 +278,8 @@ class Forwarder:
                     await self._log_request(
                         db, pool_type, original_model, endpoint,
                         success=False, latency_ms=latency_ms,
-                        error_message=error_msg
+                        error_message=error_msg,
+                        request_body=body
                     )
                     last_error = error_msg
                     break # 切换到下一个端点
@@ -229,7 +329,9 @@ class Forwarder:
                 original_model, endpoint,
                 success=True, latency_ms=latency_ms,
                 status_code=200,
-                input_tokens=input_tokens, output_tokens=output_tokens
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                request_body=body,
+                response_body=response_data
             )
 
             return response_data, None, None
@@ -274,7 +376,7 @@ class Forwarder:
             # 3. 返回生成器处理后续数据流
             # 注意：client 和 response 的所有权转移给了生成器
             generator = self._stream_generator(
-                client, response, endpoint, original_model, start_time
+                client, response, endpoint, original_model, start_time, body
             )
             return None, generator, None
 
@@ -289,7 +391,8 @@ class Forwarder:
         response: httpx.Response,
         endpoint: SelectedEndpoint,
         original_model: str,
-        start_time: float
+        start_time: float,
+        request_body: Dict[str, Any]
     ) -> AsyncIterator[bytes]:
         """
         流式响应生成器 - 负责读取数据流并处理中断
@@ -297,13 +400,26 @@ class Forwarder:
         pool_mgr = self.pool_mgr
         endpoint_id = endpoint.endpoint_id
 
+        # 收集响应数据用于日志
+        response_chunks = []
+
         try:
             # 直接 pipe 数据流
             async for chunk in response.aiter_bytes():
+                response_chunks.append(chunk)
                 yield chunk
 
             # 流正常结束，记录成功
             latency_ms = int((time.time() - start_time) * 1000)
+
+            # 尝试解析响应体（流式响应通常是 SSE 格式）
+            response_body = None
+            try:
+                full_response = b''.join(response_chunks).decode('utf-8')
+                # 简单记录原始响应（SSE 格式），不做复杂解析
+                response_body = {"raw_stream": full_response[:5000]}  # 限制长度避免过大
+            except Exception:
+                pass
 
             # 使用新的数据库会话记录日志（因为原来的可能已经关闭或不在此上下文）
             from db import get_db_context
@@ -315,7 +431,9 @@ class Forwarder:
                     pool_mgr.model_to_pool_type(original_model),
                     original_model, endpoint,
                     success=True, latency_ms=latency_ms,
-                    status_code=200
+                    status_code=200,
+                    request_body=request_body,
+                    response_body=response_body
                 )
 
         except Exception as e:
@@ -341,7 +459,8 @@ class Forwarder:
                     pool_mgr.model_to_pool_type(original_model),
                     original_model, endpoint,
                     success=False, latency_ms=latency_ms,
-                    error_message=error_msg
+                    error_message=error_msg,
+                    request_body=request_body
                 )
         finally:
             # 务必关闭资源
@@ -363,7 +482,9 @@ class Forwarder:
         status_code: Optional[int] = None,
         error_message: Optional[str] = None,
         input_tokens: Optional[int] = None,
-        output_tokens: Optional[int] = None
+        output_tokens: Optional[int] = None,
+        request_body: Optional[Dict[str, Any]] = None,
+        response_body: Optional[Dict[str, Any]] = None
     ):
         """记录请求日志"""
         try:
@@ -378,7 +499,9 @@ class Forwarder:
                 error_message=error_message,
                 latency_ms=latency_ms,
                 input_tokens=input_tokens,
-                output_tokens=output_tokens
+                output_tokens=output_tokens,
+                request_body=request_body,
+                response_body=response_body
             )
         except Exception as e:
             logger.error(f"[Forwarder] 记录日志失败: {e}")

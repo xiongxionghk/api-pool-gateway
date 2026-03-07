@@ -3,7 +3,7 @@ from .schemas import (
     ProviderCreate, ProviderUpdate, ProviderResponse, ProviderWithModels,
     ModelEndpointCreate, ModelEndpointUpdate, ModelEndpointResponse,
     PoolResponse, PoolEndpointsResponse, PoolUpdate,
-    StatsResponse, LogResponse, LogListResponse,
+    StatsResponse, LogListItem, LogResponse, LogListResponse,
     MessageResponse, FetchModelsResponse,
     ApiFormat as SchemaApiFormat, PoolType as SchemaPoolType
 )
@@ -16,6 +16,6 @@ __all__ = [
     "ProviderCreate", "ProviderUpdate", "ProviderResponse", "ProviderWithModels",
     "ModelEndpointCreate", "ModelEndpointUpdate", "ModelEndpointResponse",
     "PoolResponse", "PoolEndpointsResponse", "PoolUpdate",
-    "StatsResponse", "LogResponse", "LogListResponse",
+    "StatsResponse", "LogListItem", "LogResponse", "LogListResponse",
     "MessageResponse", "FetchModelsResponse",
 ]

@@ -261,8 +261,22 @@ async def get_logs(
     success: Optional[bool] = None,
     provider_name: Optional[str] = None
 ) -> tuple[List[RequestLog], int]:
-    """获取日志列表"""
-    query = select(RequestLog)
+    """获取日志列表（不读取 request_body 和 response_body）"""
+    # 只查询需要的列，不读取大 JSON 字段
+    query = select(
+        RequestLog.id,
+        RequestLog.pool_type,
+        RequestLog.requested_model,
+        RequestLog.actual_model,
+        RequestLog.provider_name,
+        RequestLog.success,
+        RequestLog.status_code,
+        RequestLog.error_message,
+        RequestLog.latency_ms,
+        RequestLog.input_tokens,
+        RequestLog.output_tokens,
+        RequestLog.created_at,
+    )
 
     if pool_type:
         query = query.where(RequestLog.pool_type == pool_type)
@@ -272,16 +286,30 @@ async def get_logs(
         query = query.where(RequestLog.provider_name == provider_name)
 
     # 总数
-    count_result = await db.execute(
-        select(func.count()).select_from(query.subquery())
-    )
+    count_query = select(func.count(RequestLog.id))
+    if pool_type:
+        count_query = count_query.where(RequestLog.pool_type == pool_type)
+    if success is not None:
+        count_query = count_query.where(RequestLog.success == success)
+    if provider_name:
+        count_query = count_query.where(RequestLog.provider_name == provider_name)
+
+    count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
 
     # 分页
     query = query.order_by(RequestLog.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
 
-    return list(result.scalars().all()), total
+    return list(result.all()), total
+
+
+async def get_log_by_id(db: AsyncSession, log_id: int) -> Optional[RequestLog]:
+    """获取单条日志详情（包含请求体和响应体）"""
+    result = await db.execute(
+        select(RequestLog).where(RequestLog.id == log_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_stats(db: AsyncSession) -> Dict[str, Any]:

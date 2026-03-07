@@ -10,7 +10,8 @@ import {
   Trash2,
   Scale,
   Clock,
-  Search
+  Search,
+  Maximize2
 } from 'lucide-react'
 import clsx from 'clsx'
 import { fetchPoolDetail, deleteEndpoint, updatePoolConfig, updateEndpoint } from '../api/client'
@@ -501,6 +502,28 @@ function PoolDetailView({ poolType }: { poolType: 'tool' | 'normal' | 'advanced'
                             className="w-8 bg-transparent text-xs font-medium text-center text-surface-700 dark:text-surface-300 focus:outline-none"
                           />
                           <span className="text-[10px] text-surface-400">s</span>
+                        </div>
+
+                        {/* 上下文窗口设置 */}
+                        <div className="flex items-center gap-1 bg-surface-50 dark:bg-surface-800/50 rounded px-1.5 py-0.5 border border-surface-200 dark:border-surface-700" title="上下文窗口(tokens，0表示不限制)">
+                          <Maximize2 className="w-3 h-3 text-surface-400" />
+                          <input
+                            type="number"
+                            min="0"
+                            value={model.context_window || 0}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value)
+                              if (!isNaN(val) && val >= 0) {
+                                updateEndpointMutation.mutate({
+                                  id: model.id,
+                                  data: { context_window: val === 0 ? null : val }
+                                })
+                              }
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-14 bg-transparent text-xs font-medium text-center text-surface-700 dark:text-surface-300 focus:outline-none"
+                          />
+                          <span className="text-[10px] text-surface-400">tok</span>
                         </div>
                       </div>
                     </div>

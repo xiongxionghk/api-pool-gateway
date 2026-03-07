@@ -27,6 +27,7 @@ class SelectedEndpoint:
     model_id: str
     api_format: str  # "openai" or "anthropic"
     timeout: Optional[float] = None  # 超时时间(秒)
+    context_window: Optional[int] = None  # 上下文窗口(tokens)
 
 
 class PoolManager:
@@ -42,10 +43,16 @@ class PoolManager:
     async def select_endpoint(
         self,
         db: AsyncSession,
-        pool_type: PoolType
+        pool_type: PoolType,
+        required_tokens: Optional[int] = None
     ) -> Optional[SelectedEndpoint]:
         """
         选择一个可用的端点（基于平滑加权轮询 Smooth Weighted Round Robin）
+
+        Args:
+            db: 数据库会话
+            pool_type: 池类型
+            required_tokens: 本次请求所需的总 token 数，用于过滤上下文窗口不足的模型
         """
         async with self._lock:
             # 1. 获取池内所有启用的端点
@@ -70,10 +77,24 @@ class PoolManager:
                             f"[PoolManager] 端点 {ep.id} 在间隔期内，跳过 (剩余 {(next_available_time - now).total_seconds():.1f}s)"
                         )
                         continue
+
+                # 检查上下文窗口
+                if required_tokens is not None and ep.context_window is not None and ep.context_window < required_tokens:
+                    logger.info(
+                        f"[PoolManager] 端点 {ep.id} 上下文窗口不足，跳过 "
+                        f"(需要={required_tokens}, 支持={ep.context_window})"
+                    )
+                    continue
+
                 available_endpoints.append(ep)
 
             if not available_endpoints:
-                logger.warning(f"[PoolManager] 池 {pool_type.value} 没有可用端点")
+                if required_tokens is not None:
+                    logger.warning(
+                        f"[PoolManager] 池 {pool_type.value} 没有支持 {required_tokens} tokens 上下文的可用端点"
+                    )
+                else:
+                    logger.warning(f"[PoolManager] 池 {pool_type.value} 没有可用端点")
                 return None
 
             # 3. 初始化或清理状态
@@ -131,9 +152,10 @@ class PoolManager:
                 )
                 return None
 
+            context_window_display = best_endpoint.context_window if best_endpoint.context_window else "无限制"
             logger.info(
                 f"[PoolManager] 选中端点: {provider.name}/{best_endpoint.model_id} "
-                f"(权重={best_endpoint.weight}, 池={pool_type.value})"
+                f"(权重={best_endpoint.weight}, 池={pool_type.value}, 上下文={context_window_display})"
             )
 
             # 获取池配置的超时时间
@@ -155,7 +177,8 @@ class PoolManager:
                 api_key=provider.api_key,
                 model_id=best_endpoint.model_id,
                 api_format=provider.api_format.value,
-                timeout=timeout
+                timeout=timeout,
+                context_window=best_endpoint.context_window
             )
 
     async def mark_success(
@@ -223,6 +246,7 @@ class PoolManager:
                     "success_rate": round(ep.success_requests / ep.total_requests * 100, 2) if ep.total_requests > 0 else 0,
                     "avg_latency_ms": round(ep.avg_latency_ms, 2),
                     "min_interval_seconds": ep.min_interval_seconds or 0,
+                    "context_window": ep.context_window,
                 })
 
             providers_status.append({
