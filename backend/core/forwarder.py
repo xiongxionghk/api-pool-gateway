@@ -483,10 +483,13 @@ class Forwarder:
                 )
 
             # 3. 预读首批数据检测流式错误
+            # 必须保存迭代器引用，后续继续用同一个迭代器，避免重复调用 aiter_bytes() 导致 "content already streamed" 错误
+            stream_iter = response.aiter_bytes()
             first_chunk = None
-            async for chunk in response.aiter_bytes():
-                first_chunk = chunk
-                break
+            try:
+                first_chunk = await stream_iter.__anext__()
+            except StopAsyncIteration:
+                pass
 
             if first_chunk:
                 # 检测首批数据中是否包含错误
@@ -502,9 +505,9 @@ class Forwarder:
                     )
 
             # 4. 返回生成器处理后续数据流
-            # 注意：client 和 response 的所有权转移给了生成器
+            # 注意：client、response、stream_iter 的所有权转移给了生成器
             generator = self._stream_generator(
-                client, response, endpoint, original_model, start_time,
+                client, response, stream_iter, endpoint, original_model, start_time,
                 request_id, attempt_index, previous_model, body, first_chunk
             )
             return None, generator, None
@@ -518,6 +521,7 @@ class Forwarder:
         self,
         client: httpx.AsyncClient,
         response: httpx.Response,
+        stream_iter: AsyncIterator[bytes],
         endpoint: SelectedEndpoint,
         original_model: str,
         start_time: float,
@@ -542,8 +546,8 @@ class Forwarder:
                 response_chunks.append(first_chunk)
                 yield first_chunk
 
-            # 继续 pipe 剩余数据流
-            async for chunk in response.aiter_bytes():
+            # 继续 pipe 剩余数据流，使用同一个迭代器（而不是重新调用 aiter_bytes）
+            async for chunk in stream_iter:
                 # 持续监控错误
                 error_msg = _detect_sse_error(chunk)
                 if error_msg:

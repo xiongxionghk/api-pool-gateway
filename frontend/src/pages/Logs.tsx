@@ -274,9 +274,35 @@ function LogRow({ log, onViewDetail }: { log: LogListItem; onViewDetail: () => v
       {expanded && log.error_message && (
         <tr>
           <td colSpan={7} className="px-3 sm:px-4 py-2 sm:py-3 bg-red-50 dark:bg-red-900/10">
-            <p className="text-xs sm:text-sm text-red-600 dark:text-red-400 font-mono whitespace-pre-wrap">
-              {log.error_message}
-            </p>
+            <div className="space-y-2">
+              <p className="text-xs sm:text-sm text-red-600 dark:text-red-400 font-mono whitespace-pre-wrap">
+                {log.error_message}
+              </p>
+              {(log.attempt_index != null || log.failover_reason || log.previous_model || log.configured_timeout_ms) && (
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {log.attempt_index != null && (
+                    <span className="px-2 py-1 bg-surface-100 dark:bg-surface-800 rounded">
+                      尝试 #{log.attempt_index + 1}
+                    </span>
+                  )}
+                  {log.failover_reason && (
+                    <span className="px-2 py-1 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded">
+                      原因: {log.failover_reason}
+                    </span>
+                  )}
+                  {log.previous_model && (
+                    <span className="px-2 py-1 bg-surface-100 dark:bg-surface-800 rounded">
+                      上次: {log.previous_model}
+                    </span>
+                  )}
+                  {log.configured_timeout_ms && (
+                    <span className="px-2 py-1 bg-surface-100 dark:bg-surface-800 rounded">
+                      超时: {log.configured_timeout_ms}ms
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
           </td>
         </tr>
       )}
