@@ -4,6 +4,7 @@ import time
 import logging
 import json
 import asyncio
+import uuid
 from typing import Optional, Dict, Any, AsyncIterator, List
 
 import httpx
@@ -19,6 +20,60 @@ logger = logging.getLogger(__name__)
 
 IMAGE_TOKEN_COST = 1400
 IMAGE_BLOCK_TYPES = {"image", "image_url", "input_image"}
+
+
+def _detect_sse_error(chunk: bytes) -> Optional[str]:
+    """
+    检测 SSE 流中的错误事件
+
+    返回错误消息（如果检测到错误），否则返回 None
+    """
+    try:
+        text = chunk.decode('utf-8')
+
+        # 解析 SSE 格式：查找 data: 行
+        for line in text.split('\n'):
+            if line.startswith('data: '):
+                data_json = line[6:].strip()
+                if not data_json or data_json == '[DONE]':
+                    continue
+
+                try:
+                    data = json.loads(data_json)
+
+                    # 检测 Anthropic 格式的错误（嵌套在 text_delta 中）
+                    if data.get('type') == 'content_block_delta':
+                        delta = data.get('delta', {})
+                        if delta.get('type') == 'text_delta':
+                            text_content = delta.get('text', '')
+                            # 尝试解析 text 内容为 JSON（某些错误会嵌套在这里）
+                            try:
+                                error_obj = json.loads(text_content)
+                                if 'code' in error_obj and 'type' in error_obj:
+                                    error_code = error_obj.get('code', '')
+                                    error_type = error_obj.get('type', '')
+                                    error_msg = error_obj.get('message', '')
+
+                                    # 检测已知的错误代码
+                                    if error_code in ['context_length_exceeded', 'invalid_request_error', 'token_quota_exceeded']:
+                                        return f"{error_type}: {error_msg} (code={error_code})"
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+
+                    # 检测标准错误格式
+                    if 'error' in data:
+                        error = data['error']
+                        if isinstance(error, dict):
+                            error_type = error.get('type', 'unknown_error')
+                            error_msg = error.get('message', 'Unknown error')
+                            return f"{error_type}: {error_msg}"
+
+                except json.JSONDecodeError:
+                    continue
+
+        return None
+    except Exception:
+        return None
 
 
 def count_image_tokens(request_body: Dict[str, Any]) -> int:
@@ -115,7 +170,7 @@ def calculate_request_tokens(request_body: Dict[str, Any]) -> int:
 class RetryConfig:
     """重试配置"""
     # 单个端点的重试次数
-    ENDPOINT_RETRIES = 2
+    ENDPOINT_RETRIES = 1  # 改为1次，避免同一端点拖太久
     # 跨端点的最大尝试次数
     MAX_ENDPOINT_ATTEMPTS = 5
     # 指数退避基数(秒)
@@ -136,6 +191,35 @@ class RetryConfig:
         httpx.PoolTimeout,
         httpx.NetworkError,
     )
+
+
+def _classify_failover_reason(error: Exception) -> str:
+    """将异常分类为故障转移原因"""
+    if isinstance(error, httpx.TimeoutException) or isinstance(error, TimeoutError):
+        return "timeout"
+    if isinstance(error, (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.PoolTimeout, httpx.NetworkError)):
+        return "network_error"
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code if error.response else None
+        if status_code == 429:
+            return "http_429"
+        if status_code and 500 <= status_code < 600:
+            return "http_5xx"
+        if status_code and 400 <= status_code < 500:
+            text = error.response.text if error.response else ""
+            if "context_length_exceeded" in text:
+                return "context_length_exceeded"
+            if "token_quota_exceeded" in text:
+                return "token_quota_exceeded"
+            return "http_4xx"
+    message = str(error)
+    if "context_length_exceeded" in message:
+        return "context_length_exceeded"
+    if "token_quota_exceeded" in message:
+        return "token_quota_exceeded"
+    if "Stream error" in message:
+        return "stream_error"
+    return "unknown_error"
 
 
 class Forwarder:
@@ -170,6 +254,8 @@ class Forwarder:
 
         # 上一次错误信息，用于最终返回
         last_error = ""
+        request_id = str(uuid.uuid4())
+        previous_model = None
 
         # 跨端点尝试循环
         for attempt in range(RetryConfig.MAX_ENDPOINT_ATTEMPTS):
@@ -177,8 +263,6 @@ class Forwarder:
             if not endpoint:
                 last_error = "没有可用的端点"
                 break
-
-            start_time = time.time()
 
             # 单端点重试循环
             for retry in range(RetryConfig.ENDPOINT_RETRIES):
@@ -191,6 +275,8 @@ class Forwarder:
                             f"{endpoint.provider_name}/{endpoint.model_id} (retry={retry})"
                         )
                         await asyncio.sleep(backoff)
+
+                    attempt_start_time = time.time()
 
                     # 1. 准备请求数据
                     body = request_body.copy()
@@ -219,17 +305,19 @@ class Forwarder:
                     if stream:
                         return await self._handle_stream_request(
                             db, endpoint, url, headers, body,
-                            original_model, start_time
+                            original_model, attempt_start_time,
+                            request_id, attempt, previous_model
                         )
                     else:
                         return await self._handle_normal_request(
                             db, endpoint, url, headers, body,
-                            original_model, start_time
+                            original_model, attempt_start_time,
+                            request_id, attempt, previous_model
                         )
 
                 except RetryConfig.RETRIABLE_EXCEPTIONS as e:
                     # 可重试的网络/连接错误
-                    latency_ms = int((time.time() - start_time) * 1000)
+                    latency_ms = int((time.time() - attempt_start_time) * 1000)
                     error_type = type(e).__name__
                     is_status_error = isinstance(e, httpx.HTTPStatusError)
                     status_code = e.response.status_code if is_status_error else None
@@ -243,20 +331,27 @@ class Forwarder:
                         should_retry = status_code in RetryConfig.RETRIABLE_STATUS_CODES
                         should_failover = status_code not in RetryConfig.NO_FAILOVER_STATUS_CODES
                     else:
-                        error_msg = f"{error_type}: {str(e)}"
+                        # 增强错误消息：包含超时配置和模型信息
+                        timeout_info = f" (timeout={endpoint.timeout}s)" if endpoint.timeout else ""
+                        error_msg = f"{error_type}{timeout_info} on {endpoint.provider_name}/{endpoint.model_id}: {str(e)}"
 
                     logger.error(f"[Forwarder] 请求失败 (retry={retry}): {error_msg}")
 
                     # 如果是最后一次单端点重试，或当前状态码不适合继续重试当前端点
                     if retry == RetryConfig.ENDPOINT_RETRIES - 1 or not should_retry:
                         await self.pool_mgr.mark_failure(db, endpoint.endpoint_id, error_msg)
+                        failover_reason = _classify_failover_reason(e)
                         await self._log_request(
                             db, pool_type, original_model, endpoint,
                             success=False, latency_ms=latency_ms,
+                            request_id=request_id, attempt_index=attempt,
                             status_code=status_code, error_message=error_msg,
+                            failover_reason=failover_reason,
+                            previous_model=previous_model,
                             request_body=body
                         )
                         last_error = error_msg
+                        previous_model = endpoint.model_id
 
                         # 对于请求体本身错误（如400/422），直接返回，避免无意义轮询
                         if not should_failover:
@@ -270,18 +365,24 @@ class Forwarder:
 
                 except Exception as e:
                     # 未知错误，记录并切换端点
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    error_msg = f"Unexpected Error: {str(e)}"
+                    latency_ms = int((time.time() - attempt_start_time) * 1000)
+                    timeout_info = f" (timeout={endpoint.timeout}s)" if endpoint.timeout else ""
+                    error_msg = f"Unexpected Error{timeout_info} on {endpoint.provider_name}/{endpoint.model_id}: {str(e)}"
                     logger.error(f"[Forwarder] 未知异常: {error_msg}")
 
                     await self.pool_mgr.mark_failure(db, endpoint.endpoint_id, error_msg)
+                    failover_reason = _classify_failover_reason(e)
                     await self._log_request(
                         db, pool_type, original_model, endpoint,
                         success=False, latency_ms=latency_ms,
+                        request_id=request_id, attempt_index=attempt,
                         error_message=error_msg,
+                        failover_reason=failover_reason,
+                        previous_model=previous_model,
                         request_body=body
                     )
                     last_error = error_msg
+                    previous_model = endpoint.model_id
                     break # 切换到下一个端点
 
         # 所有端点尝试都失败
@@ -295,7 +396,10 @@ class Forwarder:
         headers: Dict[str, str],
         body: Dict[str, Any],
         original_model: str,
-        start_time: float
+        start_time: float,
+        request_id: str,
+        attempt_index: int,
+        previous_model: Optional[str]
     ) -> tuple[Optional[Dict[str, Any]], None, Optional[str]]:
         """处理非流式请求"""
         req_timeout = endpoint.timeout if endpoint.timeout is not None else self.timeout
@@ -328,7 +432,9 @@ class Forwarder:
                 db, self.pool_mgr.model_to_pool_type(original_model),
                 original_model, endpoint,
                 success=True, latency_ms=latency_ms,
+                request_id=request_id, attempt_index=attempt_index,
                 status_code=200,
+                previous_model=previous_model,
                 input_tokens=input_tokens, output_tokens=output_tokens,
                 request_body=body,
                 response_body=response_data
@@ -344,11 +450,14 @@ class Forwarder:
         headers: Dict[str, str],
         body: Dict[str, Any],
         original_model: str,
-        start_time: float
+        start_time: float,
+        request_id: str,
+        attempt_index: int,
+        previous_model: Optional[str]
     ) -> tuple[None, AsyncIterator[bytes], Optional[str]]:
         """
-        处理流式请求 - 立即发起请求，确认连接成功后再返回生成器
-        这样外层的重试逻辑可以捕获连接错误
+        处理流式请求 - 立即发起请求，预读首批数据检测错误后再返回生成器
+        这样外层的重试逻辑可以捕获连接错误和流式错误
         """
         req_timeout = endpoint.timeout if endpoint.timeout is not None else self.timeout
 
@@ -373,10 +482,30 @@ class Forwarder:
                     response=response
                 )
 
-            # 3. 返回生成器处理后续数据流
+            # 3. 预读首批数据检测流式错误
+            first_chunk = None
+            async for chunk in response.aiter_bytes():
+                first_chunk = chunk
+                break
+
+            if first_chunk:
+                # 检测首批数据中是否包含错误
+                error_msg = _detect_sse_error(first_chunk)
+                if error_msg:
+                    await response.aclose()
+                    await client.aclose()
+                    # 抛出异常触发重试
+                    raise httpx.HTTPStatusError(
+                        f"Stream contains error: {error_msg}",
+                        request=request,
+                        response=response
+                    )
+
+            # 4. 返回生成器处理后续数据流
             # 注意：client 和 response 的所有权转移给了生成器
             generator = self._stream_generator(
-                client, response, endpoint, original_model, start_time, body
+                client, response, endpoint, original_model, start_time,
+                request_id, attempt_index, previous_model, body, first_chunk
             )
             return None, generator, None
 
@@ -392,7 +521,11 @@ class Forwarder:
         endpoint: SelectedEndpoint,
         original_model: str,
         start_time: float,
-        request_body: Dict[str, Any]
+        request_id: str,
+        attempt_index: int,
+        previous_model: Optional[str],
+        request_body: Dict[str, Any],
+        first_chunk: Optional[bytes] = None
     ) -> AsyncIterator[bytes]:
         """
         流式响应生成器 - 负责读取数据流并处理中断
@@ -404,8 +537,19 @@ class Forwarder:
         response_chunks = []
 
         try:
-            # 直接 pipe 数据流
+            # 先 yield 预读的首批数据
+            if first_chunk:
+                response_chunks.append(first_chunk)
+                yield first_chunk
+
+            # 继续 pipe 剩余数据流
             async for chunk in response.aiter_bytes():
+                # 持续监控错误
+                error_msg = _detect_sse_error(chunk)
+                if error_msg:
+                    logger.error(f"[Forwarder] 流式传输中检测到错误: {error_msg}")
+                    raise Exception(f"Stream error detected: {error_msg}")
+
                 response_chunks.append(chunk)
                 yield chunk
 
@@ -431,7 +575,9 @@ class Forwarder:
                     pool_mgr.model_to_pool_type(original_model),
                     original_model, endpoint,
                     success=True, latency_ms=latency_ms,
+                    request_id=request_id, attempt_index=attempt_index,
                     status_code=200,
+                    previous_model=previous_model,
                     request_body=request_body,
                     response_body=response_body
                 )
@@ -459,7 +605,10 @@ class Forwarder:
                     pool_mgr.model_to_pool_type(original_model),
                     original_model, endpoint,
                     success=False, latency_ms=latency_ms,
+                    request_id=request_id, attempt_index=attempt_index,
                     error_message=error_msg,
+                    failover_reason="stream_error",
+                    previous_model=previous_model,
                     request_body=request_body
                 )
         finally:
@@ -479,8 +628,12 @@ class Forwarder:
         endpoint: SelectedEndpoint,
         success: bool,
         latency_ms: int,
+        request_id: str,
+        attempt_index: int,
         status_code: Optional[int] = None,
         error_message: Optional[str] = None,
+        failover_reason: Optional[str] = None,
+        previous_model: Optional[str] = None,
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
         request_body: Optional[Dict[str, Any]] = None,
@@ -488,12 +641,18 @@ class Forwarder:
     ):
         """记录请求日志"""
         try:
+            configured_timeout_ms = int(endpoint.timeout * 1000) if endpoint.timeout else None
             await crud.create_log(
                 db,
                 pool_type=pool_type,
                 requested_model=requested_model,
                 actual_model=endpoint.model_id,
                 provider_name=endpoint.provider_name,
+                request_id=request_id,
+                attempt_index=attempt_index,
+                failover_reason=failover_reason,
+                previous_model=previous_model,
+                configured_timeout_ms=configured_timeout_ms,
                 success=success,
                 status_code=status_code,
                 error_message=error_message,

@@ -107,6 +107,11 @@ class RequestLog(Base):
     requested_model = Column(String(200), comment="请求的模型名")
     actual_model = Column(String(200), comment="实际使用的模型")
     provider_name = Column(String(100), comment="服务商名称")
+    request_id = Column(String(36), nullable=False, index=True, comment="请求 UUID，关联同一次请求的多次尝试")
+    attempt_index = Column(Integer, default=0, comment="第几次尝试（0-based）")
+    failover_reason = Column(String(100), nullable=True, comment="故障转移原因")
+    previous_model = Column(String(200), nullable=True, comment="上一次失败的模型")
+    configured_timeout_ms = Column(Integer, nullable=True, comment="本次尝试的配置超时（毫秒）")
 
     # 结果
     success = Column(Boolean, default=True)

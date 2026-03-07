@@ -275,6 +275,11 @@ async def get_logs(
         RequestLog.latency_ms,
         RequestLog.input_tokens,
         RequestLog.output_tokens,
+        RequestLog.request_id,
+        RequestLog.attempt_index,
+        RequestLog.failover_reason,
+        RequestLog.previous_model,
+        RequestLog.configured_timeout_ms,
         RequestLog.created_at,
     )
 

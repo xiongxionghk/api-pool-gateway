@@ -534,7 +534,12 @@ async def get_logs(
             latency_ms=log[8],
             input_tokens=log[9],
             output_tokens=log[10],
-            created_at=log[11],
+            request_id=log[11],
+            attempt_index=log[12],
+            failover_reason=log[13],
+            previous_model=log[14],
+            configured_timeout_ms=log[15],
+            created_at=log[16],
         ) for log in logs]
     )
 
@@ -558,6 +563,11 @@ async def get_log_detail(log_id: int, db: AsyncSession = Depends(get_db)):
         latency_ms=log.latency_ms,
         input_tokens=log.input_tokens,
         output_tokens=log.output_tokens,
+        request_id=log.request_id,
+        attempt_index=log.attempt_index,
+        failover_reason=log.failover_reason,
+        previous_model=log.previous_model,
+        configured_timeout_ms=log.configured_timeout_ms,
         request_body=log.request_body,
         response_body=log.response_body,
         created_at=log.created_at,

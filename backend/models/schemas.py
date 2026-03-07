@@ -171,6 +171,11 @@ class LogListItem(BaseModel):
     latency_ms: int
     input_tokens: Optional[int]
     output_tokens: Optional[int]
+    request_id: Optional[str] = None
+    attempt_index: Optional[int] = None
+    failover_reason: Optional[str] = None
+    previous_model: Optional[str] = None
+    configured_timeout_ms: Optional[int] = None
     created_at: datetime
 
     class Config:
@@ -190,6 +195,11 @@ class LogResponse(BaseModel):
     latency_ms: int
     input_tokens: Optional[int]
     output_tokens: Optional[int]
+    request_id: Optional[str] = None
+    attempt_index: Optional[int] = None
+    failover_reason: Optional[str] = None
+    previous_model: Optional[str] = None
+    configured_timeout_ms: Optional[int] = None
     request_body: Optional[Dict[str, Any]] = None
     response_body: Optional[Dict[str, Any]] = None
     created_at: datetime

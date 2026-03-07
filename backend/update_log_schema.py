@@ -38,6 +38,37 @@ try:
         else:
             print("字段 response_body 已存在")
 
+        # 添加 failover 追踪字段
+        if "request_id" not in columns:
+            print("添加字段: request_id")
+            cursor.execute("ALTER TABLE request_logs ADD COLUMN request_id TEXT")
+        else:
+            print("字段 request_id 已存在")
+
+        if "attempt_index" not in columns:
+            print("添加字段: attempt_index")
+            cursor.execute("ALTER TABLE request_logs ADD COLUMN attempt_index INTEGER DEFAULT 0")
+        else:
+            print("字段 attempt_index 已存在")
+
+        if "failover_reason" not in columns:
+            print("添加字段: failover_reason")
+            cursor.execute("ALTER TABLE request_logs ADD COLUMN failover_reason TEXT")
+        else:
+            print("字段 failover_reason 已存在")
+
+        if "previous_model" not in columns:
+            print("添加字段: previous_model")
+            cursor.execute("ALTER TABLE request_logs ADD COLUMN previous_model TEXT")
+        else:
+            print("字段 previous_model 已存在")
+
+        if "configured_timeout_ms" not in columns:
+            print("添加字段: configured_timeout_ms")
+            cursor.execute("ALTER TABLE request_logs ADD COLUMN configured_timeout_ms INTEGER")
+        else:
+            print("字段 configured_timeout_ms 已存在")
+
         # 删除旧的 request_summary 字段（如果存在）
         if "request_summary" in columns:
             print("注意: request_summary 字段仍存在，可以手动删除（SQLite 不支持 DROP COLUMN）")

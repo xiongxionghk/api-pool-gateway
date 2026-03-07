@@ -112,6 +112,11 @@ export interface LogListItem {
   latency_ms: number
   input_tokens: number | null
   output_tokens: number | null
+  request_id?: string | null
+  attempt_index?: number | null
+  failover_reason?: string | null
+  previous_model?: string | null
+  configured_timeout_ms?: number | null
   created_at: string
 }
 
