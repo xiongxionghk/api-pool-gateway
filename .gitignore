@@ -29,3 +29,6 @@ data/logs/
 
 # 日志
 *.log
+
+# 测试文件（可能包含敏感信息）
+test_anthropic_token_counting.py
